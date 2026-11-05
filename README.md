@@ -73,6 +73,8 @@ unreadable selected files, or parse errors. `check` never writes files. Explicit
 file lists skip unsupported and excluded files, making them suitable for hooks.
 Paths must be relative to `--root` (default `.`).
 
+### Rule fields
+
 Choose exactly one matcher: `query`, `regex`, or `path_only = true`.
 
 | Field                        | Purpose                                                           |
@@ -84,6 +86,9 @@ Choose exactly one matcher: `query`, `regex`, or `path_only = true`.
 | `prefilter`                  | Cheap regex on raw text before expensive matching                 |
 | `skip_lines` / `skip_inside` | Ignore selected lines or nodes                                    |
 | `if_file` / `unless_file`    | File-level regex or query conditions                              |
+| `stages`                     | Root-rebased queries with explicit wrapper unwrapping             |
+| `conditions`                 | Queries scoped to a captured node                                 |
+| `comparisons`                | Source-text equality between exported bindings                    |
 | `limit = "first-per-file"`   | Report only the first match                                       |
 | `severity = "warning"`       | Report without failing checks                                     |
 
@@ -91,6 +96,7 @@ Each `@finding` capture produces a finding. Queries support tree-sitter text
 predicates and `#count-eq?`, `#count-gt?`, `#count-lt?` for named children, excluding
 comments. Rule filenames must match their ids. Validate and test before enabling.
 Generated JSON Schemas in `schema/` provide editor validation and completion.
+See [scoped matching](docs/query-stages.md) for stage exports, conditions, and resource limits.
 
 ### Suppression
 

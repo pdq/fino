@@ -4,6 +4,7 @@ mod directives;
 mod engine;
 mod mask;
 pub mod model;
+mod query_conditions;
 mod scan;
 mod snapshot;
 mod testing;

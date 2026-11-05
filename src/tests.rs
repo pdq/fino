@@ -526,6 +526,613 @@ fn fast_grouped_loading_matches_strict_loading() {
     }
 }
 
+const SCOPED: &str = r#"
+id = "scoped"
+message = "Scoped match."
+query = '''((call target: (identifier) @finding (arguments) @_scope)
+  (#eq? @finding "box"))'''
+[[conditions]]
+capture = "_scope"
+query = '((identifier) @value (#eq? @value "marker"))'
+expect = "exists"
+[[conditions]]
+capture = "_scope"
+query = '((identifier) @value (#eq? @value "blocked"))'
+expect = "absent"
+"#;
+
+#[test]
+fn capture_conditions_are_scoped_anded_and_identical_in_grouped_queries() {
+    let other = "id = 'other'\nmessage = 'Other.'\nquery = '(atom) @finding'\n";
+    let (root, strict) = project("", &[SCOPED, other]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let text = "marker\nbox([ordinary])\nbox([marker, marker])\nbox([marker, blocked])\nbox([marker, nest([deep])])\nblocked\n";
+    let expected = lint(&strict, "a.ex", text).unwrap();
+    assert_eq!(
+        expected.iter().map(|row| row.line).collect::<Vec<_>>(),
+        [3, 5]
+    );
+    assert_eq!(expected, lint(&fast, "a.ex", text).unwrap());
+    let nested = "box([\n marker,\n box([ordinary])\n])\nbox([\n blocked,\n box([marker])\n])\n";
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "nested.ex", nested), [1, 7]);
+    }
+    // Cached witnesses and captures are local to one source file.
+    assert!(lint(&fast, "b.ex", "box([ordinary])\n").unwrap().is_empty());
+}
+
+#[test]
+fn capture_conditions_include_self_and_root_does_not_search_descendants() {
+    let rule = r#"
+id = "rooted"
+message = "Root only."
+query = '((call target: (identifier) @finding (arguments (_) @_scope)) (#eq? @finding "box"))'
+[[conditions]]
+capture = "_scope"
+relation = "root"
+query = '((identifier) @value (#eq? @value "marker"))'
+expect = "exists"
+"#;
+    for (relation, expected) in [("root", vec![1]), ("descendant-or-self", vec![1, 2])] {
+        let rule = rule.replace("relation = \"root\"", &format!("relation = \"{relation}\""));
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert_eq!(
+                lines(
+                    engine,
+                    "a.ex",
+                    "box(marker)\nbox([marker])\nbox(ordinary)\n"
+                ),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn capture_conditions_reject_missing_and_repeated_captures() {
+    for (query, text, expected) in [
+        (
+            "(list) @_scope @finding\n(tuple) @finding",
+            "[x]\n{x}\n",
+            vec![1],
+        ),
+        (
+            "(list . (identifier) @_scope+ .) @finding",
+            "[x]\n[x, y]\n",
+            vec![1],
+        ),
+    ] {
+        for expect in ["exists", "absent"] {
+            let auxiliary = if expect == "exists" {
+                "(identifier)"
+            } else {
+                "(atom)"
+            };
+            let rule = format!(
+                "id = 'cardinality'\nmessage = 'One scope.'\nquery = '''{query}'''\n[[conditions]]\ncapture = '_scope'\nquery = '{auxiliary}'\nexpect = '{expect}'\n"
+            );
+            let (root, strict) = project("", &[&rule]);
+            let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+            for engine in [&strict, &fast] {
+                assert_eq!(lines(engine, "a.ex", text), expected, "{expect}: {query}");
+            }
+        }
+    }
+}
+
+#[test]
+fn capture_conditions_evaluate_auxiliary_count_predicates_and_keep_captures_local() {
+    let rule = r#"
+id = "counts"
+message = "One item."
+query = '(list) @finding @_scope'
+[[conditions]]
+capture = "_scope"
+query = '((list) @finding (#count-eq? @finding 1))'
+relation = "root"
+expect = "exists"
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "a.ex", "[x]\n[x, y]\n[ # note\nx]\n"), [1, 3]);
+    }
+}
+
+#[test]
+fn capture_conditions_validate_both_loading_paths() {
+    let cases = [
+        (
+            "capture = 'missing'\nquery = '(identifier)'\nexpect = 'exists'",
+            "unknown outer capture",
+        ),
+        (
+            "capture = '_scope'\nquery = ''\nexpect = 'exists'",
+            "at least one pattern",
+        ),
+        (
+            "capture = '_scope'\nquery = '(not_a_node)'\nexpect = 'exists'",
+            "invalid query",
+        ),
+        (
+            "capture = '_scope'\nquery = '((identifier) @a (#unknown? @a))'\nexpect = 'exists'",
+            "unsupported predicate",
+        ),
+        (
+            "capture = '_scope'\nquery = '((identifier) @a (identifier) @b)'\nexpect = 'exists'",
+            "single root",
+        ),
+        (
+            "capture = '_scope'\nquery = '(identifier)'\nexpect = 'maybe'",
+            "unknown variant",
+        ),
+    ];
+    for (condition, error) in cases {
+        let (root, _) = project("", &[]);
+        fs::write(root.join(".fino/rules/invalid.toml"), format!("id = 'invalid'\nmessage = 'Invalid.'\nquery = '(list) @finding @_scope'\n[[conditions]]\n{condition}\n")).unwrap();
+        for strict in [true, false] {
+            let (_, problems) = if strict {
+                Engine::load(&root.join(".fino/config.toml"), None)
+            } else {
+                Engine::load_fast(&root.join(".fino/config.toml"))
+            }
+            .unwrap();
+            assert!(
+                problems
+                    .iter()
+                    .flat_map(|p| &p.errors)
+                    .any(|message| message.contains(error)),
+                "{problems:?}"
+            );
+        }
+    }
+    for matcher in ["regex = 'x'", "path_only = true"] {
+        let (root, _) = project("", &[]);
+        let path = root.join("invalid.toml");
+        fs::write(&path, format!("id = 'invalid'\nmessage = 'Invalid.'\n{matcher}\n[[conditions]]\ncapture = 'finding'\nquery = '(identifier)'\nexpect = 'exists'\n")).unwrap();
+        let (_, problems) = compile_rule(&path);
+        assert!(
+            problems
+                .errors
+                .iter()
+                .any(|message| message.contains("conditions require a valid outer query"))
+        );
+    }
+}
+
+#[test]
+fn capture_condition_match_limit_errors_are_not_absence_or_findings() {
+    for expect in ["exists", "absent"] {
+        let rule = format!(
+            "id = 'overflow'\nmessage = 'Overflow.'\nquery = '(list) @finding @_scope'\n[[conditions]]\ncapture = '_scope'\nquery = '(list (identifier) @a (identifier) @b)'\nexpect = '{expect}'\n"
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        let text = format!("[{}]\n", vec!["item"; 50].join(", "));
+        for engine in [&strict, &fast] {
+            let (mut parser, mut cursor) = scan::worker();
+            cursor.set_match_limit(1);
+            let error =
+                scan::source(engine, None, &mut parser, &mut cursor, "a.ex", &text).unwrap_err();
+            assert!(
+                error
+                    .message
+                    .contains("capture condition query match limit exceeded"),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+const STAGED: &str = r#"
+id = "staged"
+message = "Equal items."
+query = '''((call target: (identifier) @finding
+  (arguments (_) @_expression)) (#eq? @finding "box"))'''
+[[stages]]
+from = "_expression"
+unwrap_singleton = ["block"]
+query = '(list . (_) @_first . (_) @_second .)'
+export = ["_first", "_second"]
+[[stages]]
+from = "_first"
+unwrap_singleton = ["block"]
+query = '(identifier) @_left'
+export = ["_left"]
+[[stages]]
+from = "_second"
+unwrap_singleton = ["block"]
+query = '(identifier) @_right'
+export = ["_right"]
+[[comparisons]]
+left = "_left"
+right = "_right"
+operator = "text-eq"
+[[conditions]]
+capture = "_left"
+relation = "root"
+query = '((identifier) @local (#not-eq? @local "blocked"))'
+expect = "exists"
+"#;
+
+#[test]
+fn stages_can_create_findings_at_root_or_descendant_token_spans() {
+    // Query groups order longer queries first. Force capture-index renumbering.
+    let other = format!(
+        "id = 'aaa'\nmessage = 'Other.'\nquery = ''';; {}\n(atom) @_unrelated @finding'''\n",
+        "padding ".repeat(40)
+    );
+    let rule = r#"
+id = "created"
+message = "Selected span."
+query = '''((call target: (identifier) @_target (arguments (_) @_expression))
+  (#eq? @_target "box"))'''
+[[stages]]
+from = "_expression"
+unwrap_singleton = ["block"]
+query = '''(alias) @finding @_name
+(dot operator: "." @finding right: (alias) @_name)'''
+export = ["finding", "_name"]
+[[conditions]]
+capture = "_name"
+relation = "root"
+query = '((alias) @value (#eq? @value "Member"))'
+expect = "exists"
+"#;
+    let text = "box(((\n Member\n)))\nbox((prefix().\n Member))\nbox(wrap(Member))\nbox(Other)\n";
+    for rules in [vec![rule], vec![rule, &other]] {
+        let (root, strict) = project("", &rules);
+        let (fast, problems) = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(|| Engine::load_fast(&root.join(".fino/config.toml")))
+            .unwrap();
+        assert_eq!(fast.groups.len(), 1);
+        if rules.len() > 1 {
+            assert_eq!(
+                fast.groups[0].query.capture_index_for_name("finding"),
+                Some(1)
+            );
+        }
+        assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+        for engine in [&strict, &fast] {
+            let rows = lint(engine, "a.ex", text).unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row.line, row.column))
+                    .collect::<Vec<_>>(),
+                [(2, 2), (4, 14)]
+            );
+            assert_eq!(
+                rows.iter()
+                    .map(|row| &text[row.start_byte..row.end_byte])
+                    .collect::<Vec<_>>(),
+                ["Member", "."]
+            );
+        }
+    }
+    // A later stage may reject a newly created finding before anything is emitted.
+    let rejects = rule.replace(
+        "[[conditions]]",
+        "[[stages]]\nfrom = '_name'\nquery = '(identifier)'\n[[conditions]]",
+    );
+    let (root, strict) = project("", &[&rejects]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        assert!(lint(engine, "a.ex", text).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn stages_require_a_final_finding_without_weakening_ordinary_query_validation() {
+    for extension in ["", "[[stages]]\nfrom = '_scope'\nquery = '(list)'\n"] {
+        let (root, _) = project("", &[]);
+        fs::write(root.join(".fino/rules/invalid.toml"), format!("id = 'invalid'\nmessage = 'Missing finding.'\nquery = '(list) @_scope'\n{extension}\n")).unwrap();
+        for strict in [true, false] {
+            let (_, problems) = if strict {
+                Engine::load(&root.join(".fino/config.toml"), None)
+            } else {
+                Engine::load_fast(&root.join(".fino/config.toml"))
+            }
+            .unwrap();
+            let expected = if extension.is_empty() {
+                "query needs a @finding capture"
+            } else {
+                "final binding `finding` is required"
+            };
+            assert!(
+                problems
+                    .iter()
+                    .flat_map(|p| &p.errors)
+                    .any(|error| error.contains(expected)),
+                "{problems:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn root_stages_support_alternatives_and_captures_below_the_pattern_root() {
+    let rule = r#"
+id = "alternatives"
+message = "Root selection."
+query = '''((call target: (identifier) @finding (arguments (_) @_expression))
+  (#eq? @finding "box"))'''
+[[stages]]
+from = "_expression"
+query = '''[(identifier) @part (alias) @part
+  (call target: (identifier) @part)]'''
+export = ["part"]
+[[conditions]]
+capture = "part"
+relation = "root"
+query = '[(identifier) (alias)]'
+expect = "exists"
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    for engine in [&strict, &fast] {
+        assert_eq!(
+            lines(
+                engine,
+                "a.ex",
+                "box(token)\nbox(Member)\nbox(work(x))\nbox([token])\n"
+            ),
+            [1, 2, 3]
+        );
+    }
+}
+
+#[test]
+fn stages_export_bindings_compare_text_and_preserve_outer_findings_in_both_modes() {
+    let other = format!(
+        "id = 'other'\nmessage = 'Other.'\nquery = ''';; {}\n(atom) @_unrelated @finding'''\n",
+        "padding ".repeat(40)
+    );
+    let (root, strict) = project("", &[STAGED, &other]);
+    let (fast, problems) = rayon::ThreadPoolBuilder::new()
+        .num_threads(1)
+        .build()
+        .unwrap()
+        .install(|| Engine::load_fast(&root.join(".fino/config.toml")))
+        .unwrap();
+    assert_eq!(fast.groups.len(), 1);
+    assert_eq!(
+        fast.groups[0].query.capture_index_for_name("finding"),
+        Some(1)
+    );
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let text = "box([x, x])\nbox(([(x), ((x))]))\nbox([x, y])\nbox([blocked, blocked])\nbox([[x, x]])\nbox((work(); [x, x]))\nbox([x, x, x])\n";
+    let expected = lint(&strict, "a.ex", text).unwrap();
+    assert_eq!(
+        expected.iter().map(|row| row.line).collect::<Vec<_>>(),
+        [1, 2]
+    );
+    assert!(
+        expected
+            .iter()
+            .all(|row| &text[row.start_byte..row.end_byte] == "box")
+    );
+    assert_eq!(expected, lint(&fast, "a.ex", text).unwrap());
+    for engine in [&strict, &fast] {
+        assert!(lint(engine, "next.ex", "box([x, y])\n").unwrap().is_empty());
+        assert_eq!(lines(engine, "nested.ex", "box([x, box([y, y])])\n"), [1]);
+    }
+}
+
+#[test]
+fn stages_unwrap_arbitrary_singletons_and_ignore_only_declared_children() {
+    let deep = format!(
+        "box({}[{}x{}, {}x{}]{})\n",
+        "(".repeat(64),
+        "(".repeat(40),
+        ")".repeat(40),
+        "(".repeat(35),
+        ")".repeat(35),
+        ")".repeat(64)
+    );
+    let comment = "box(( # kept comment\n [x, x]\n))\n";
+    for ignore_comments in [true, false] {
+        let rule = if ignore_comments {
+            STAGED.to_string()
+        } else {
+            STAGED.replace(
+                "unwrap_singleton = [\"block\"]",
+                "unwrap_singleton = [\"block\"]\nignore_children = []",
+            )
+        };
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert_eq!(lines(engine, "deep.ex", &deep), [1]);
+            assert_eq!(
+                lines(engine, "comments.ex", comment),
+                if ignore_comments { vec![1] } else { vec![] }
+            );
+        }
+    }
+}
+
+#[test]
+fn stage_queries_keep_local_equality_and_comparisons_can_reject_equal_text() {
+    let rule = r#"
+id = "local"
+message = "Local equality."
+query = '(list) @finding @_scope'
+[[stages]]
+from = "_scope"
+query = '((list . (identifier) @a . (identifier) @b .) (#eq? @a @b))'
+export = []
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "a.ex", "[x, x]\n[x, y]\n"), [1]);
+    }
+    let unequal = STAGED.replace("operator = \"text-eq\"", "operator = \"text-not-eq\"");
+    let (root, strict) = project("", &[&unequal]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "a.ex", "box([x, x])\nbox([x, y])\n"), [2]);
+    }
+}
+
+#[test]
+fn stage_inputs_and_comparisons_reject_missing_or_repeated_outer_bindings() {
+    for query in [
+        "(list) @finding @_scope\n(tuple) @finding",
+        "(list . (identifier) @_scope+ .) @finding",
+    ] {
+        for extension in [
+            "[[stages]]\nfrom = '_scope'\nquery = '(_) @item'\nexport = ['item']",
+            "[[comparisons]]\nleft = '_scope'\nright = '_scope'\noperator = 'text-eq'",
+        ] {
+            let rule = format!(
+                "id = 'cardinal'\nmessage = 'One binding.'\nquery = '''{query}'''\n{extension}\n"
+            );
+            let (root, strict) = project("", &[&rule]);
+            let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+            let (text, expected) = if query.contains("tuple") {
+                ("[x]\n{x}\n", vec![1])
+            } else {
+                ("[x]\n[x, y]\n", vec![1])
+            };
+            for engine in [&strict, &fast] {
+                assert_eq!(lines(engine, "a.ex", text), expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn stage_validation_rejects_collisions_forward_references_and_ambiguous_exports() {
+    let cases = [
+        (
+            "[[stages]]\nfrom = 'later'\nquery = '(list) @later'\nexport = ['later']",
+            "stages[0].from:",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @finding'\nexport = ['finding']",
+            "stages[0].export[0]: binding",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @a'\nexport = ['a', 'a']",
+            "stages[0].export[1]: binding",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @a'\nexport = ['missing']",
+            "stages[0].export[0]: unknown local",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list (identifier) @a+)'\nexport = ['a']",
+            "must occur exactly once",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list (identifier)? @a)'\nexport = ['a']",
+            "must occur exactly once",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '''(list) @a\n(tuple)'''\nexport = ['a']",
+            "must occur exactly once",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list)'\nunwrap_singleton = ['not_a_kind']",
+            "stages[0].unwrap_singleton:",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list)'\nignore_children = ['not_a_kind']",
+            "stages[0].ignore_children:",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = ''",
+            "stages[0].query: query needs",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '((identifier) @a (identifier) @b)'",
+            "stages[0].query: query patterns must have a single root",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @a'\nexport = ['a']\n[[stages]]\nfrom = 'a'\nquery = '(list) @a'\nexport = ['a']",
+            "stages[1].export[0]: binding",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @local'\n[[stages]]\nfrom = 'local'\nquery = '(list)'",
+            "stages[1].from:",
+        ),
+        (
+            "[[stages]]\nfrom = '_scope'\nquery = '(list) @a'\nrelation = 'descendant-or-self'",
+            "unknown variant",
+        ),
+        (
+            "[[comparisons]]\nleft = 'missing'\nright = '_scope'\noperator = 'text-eq'",
+            "comparisons[0].left:",
+        ),
+        (
+            "[[comparisons]]\nleft = '_scope'\nright = 'missing'\noperator = 'text-eq'",
+            "comparisons[0].right:",
+        ),
+    ];
+    for (extension, expected) in cases {
+        let (root, _) = project("", &[]);
+        fs::write(root.join(".fino/rules/invalid.toml"), format!("id = 'invalid'\nmessage = 'Invalid.'\nquery = '(list) @finding @_scope'\n{extension}\n")).unwrap();
+        for strict in [true, false] {
+            let (_, problems) = if strict {
+                Engine::load(&root.join(".fino/config.toml"), None)
+            } else {
+                Engine::load_fast(&root.join(".fino/config.toml"))
+            }
+            .unwrap();
+            assert!(
+                problems
+                    .iter()
+                    .flat_map(|p| &p.errors)
+                    .any(|error| error.contains(expected)),
+                "{expected}: {problems:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn ambiguous_stage_results_and_query_overflow_fail_the_file_in_both_modes() {
+    let rule = "id = 'ambiguous'\nmessage = 'One result.'\nquery = '(list) @finding @_scope'\n[[stages]]\nfrom = '_scope'\nquery = '(list (identifier) @item)'\nexport = ['item']\n";
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        let error = lint(engine, "a.ex", "[x, y]\n").unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("stages[0]: query produced multiple matches"),
+            "{error:?}"
+        );
+    }
+    let overflow = rule.replace(
+        "(list (identifier) @item)",
+        "(list (identifier) @item (identifier) @other)",
+    );
+    let (root, strict) = project("", &[&overflow]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    let text = format!("[{}]\n", vec!["x"; 50].join(", "));
+    for engine in [&strict, &fast] {
+        let (mut parser, mut cursor) = scan::worker();
+        cursor.set_match_limit(1);
+        let error =
+            scan::source(engine, None, &mut parser, &mut cursor, "a.ex", &text).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("stages[0]: query match limit exceeded"),
+            "{error:?}"
+        );
+    }
+}
+
 #[test]
 fn regex_match_length_measures_only_the_match_in_the_selected_unicode_unit() {
     let text = "# x\n# é\n# e\u{301}\n# 👩‍💻\n";
@@ -685,4 +1292,55 @@ fn regex_match_length_validation_fails_closed_in_both_loading_modes() {
         "id = 'syntax'\nmessage = 'Still invalid.'\nregex = 'never'\nmatch_length = { min = 100 }\n",
     ]);
     assert!(lint(&engine, "broken.ex", "defmodule (\n").is_err());
+}
+
+#[test]
+fn auxiliary_rejected_candidate_work_fails_closed_without_match_overflow() {
+    let query = "((list (identifier) @a (identifier) @b) @xs (#count-eq? @xs 0))";
+    let text = format!("[{}]\n", vec!["item"; 500].join(", "));
+    for extension in [
+        format!("[[conditions]]\ncapture = '_scope'\nquery = '{query}'\nexpect = 'exists'"),
+        format!("[[conditions]]\ncapture = '_scope'\nquery = '{query}'\nexpect = 'absent'"),
+        format!("[[stages]]\nfrom = '_scope'\nquery = '{query}'"),
+    ] {
+        let rule = format!(
+            "id = 'bounded'\nmessage = 'Bounded.'\nquery = '(list) @finding @_scope'\n{extension}\n"
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+        for engine in [&strict, &fast] {
+            let error = lint(engine, "a.ex", &text).unwrap_err();
+            assert!(error.message.contains("auxiliary query"), "{error:?}");
+            assert!(
+                error.message.contains("limit exceeded")
+                    || error.message.contains("deadline exceeded"),
+                "{error:?}"
+            );
+            assert!(
+                !error.message.contains("query match limit exceeded"),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn auxiliary_wildcard_parent_roots_are_explicitly_unsupported_not_assumed_siblings() {
+    for extension in [
+        "[[conditions]]\ncapture = '_scope'\nquery = '(_ (identifier) @item)'\nexpect = 'exists'",
+        "[[stages]]\nfrom = '_scope'\nquery = '(_ (identifier) @item)'\nexport = ['item']",
+    ] {
+        let (root, _) = project("", &[]);
+        fs::write(root.join(".fino/rules/invalid.toml"), format!("id = 'invalid'\nmessage = 'Explicit root.'\nquery = '(list) @finding @_scope'\n{extension}\n")).unwrap();
+        for strict in [true, false] {
+            let (_, problems) = if strict {
+                Engine::load(&root.join(".fino/config.toml"), None)
+            } else {
+                Engine::load_fast(&root.join(".fino/config.toml"))
+            }
+            .unwrap();
+            assert!(problems.iter().flat_map(|p| &p.errors).any(|error| error.contains("optimized wildcard-parent roots with children are unsupported; name the parent node kind")), "{problems:?}");
+        }
+    }
 }

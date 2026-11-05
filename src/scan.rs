@@ -257,7 +257,7 @@ fn diagnostic(file: &str, line: usize, column: usize, message: String) -> Diagno
 }
 
 /// Evaluate the engine's #count-* predicates (tree-sitter evaluates text predicates).
-fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::QueryMatch) -> bool {
+pub(crate) fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::QueryMatch) -> bool {
     use tree_sitter::QueryPredicateArg::{Capture, String as Text};
     query
         .general_predicates(found.pattern_index)
@@ -327,15 +327,16 @@ impl<'a> Lines<'a> {
 }
 
 /// One file's parse tree plus lazily built masks and directives.
-struct FileCtx<'a> {
-    text: &'a str,
-    tree: tree_sitter::Tree,
-    lines: Lines<'a>,
+struct FileCtx<'text, 'tree> {
+    text: &'text str,
+    tree: &'tree tree_sitter::Tree,
+    lines: Lines<'text>,
     regions: Option<Regions>,
     masked: HashMap<String, String>,
+    conditions: crate::query_conditions::Evaluator<'tree>,
 }
 
-impl FileCtx<'_> {
+impl FileCtx<'_, '_> {
     /// The text a regex rule matches against: masked per the rule, cached per rule.
     fn subject(&mut self, rule: &Rule, cursor: &mut QueryCursor) -> Result<String> {
         if rule.masks.is_empty() {
@@ -346,7 +347,7 @@ impl FileCtx<'_> {
         }
         let regions = self
             .regions
-            .get_or_insert_with(|| Regions::collect(&self.tree, self.text.as_bytes()));
+            .get_or_insert_with(|| Regions::collect(self.tree, self.text.as_bytes()));
         let mut layers = Vec::new();
         for mask in &rule.masks {
             let mut ranges: Vec<_> = mask
@@ -480,6 +481,46 @@ struct Hit {
     end: usize,
 }
 
+fn push_query_hit(hits: &mut Vec<Hit>, node: tree_sitter::Node, lines: &Lines) {
+    let start = node.start_byte();
+    let line = lines.index(start);
+    hits.push(Hit {
+        line,
+        column: start - lines.starts[line],
+        start,
+        end: node.end_byte(),
+    });
+}
+
+fn collect_query_hits<'tree>(
+    rule: &Rule,
+    ctx: &mut FileCtx<'_, 'tree>,
+    query: &tree_sitter::Query,
+    found: &tree_sitter::QueryMatch<'_, 'tree>,
+    capture: Option<u32>,
+    hits: &mut Vec<Hit>,
+) -> Result<()> {
+    if !rule.pipeline.is_empty() {
+        match ctx
+            .conditions
+            .evaluate(&rule.pipeline, query, found, ctx.text.as_bytes())?
+        {
+            crate::query_conditions::Outcome::Reject => return Ok(()),
+            crate::query_conditions::Outcome::Finding(node) => {
+                push_query_hit(hits, node, &ctx.lines);
+                return Ok(());
+            }
+            crate::query_conditions::Outcome::Outer => {}
+        }
+    }
+    if let Some(capture) = capture {
+        for item in found.captures.iter().filter(|c| c.index == capture) {
+            push_query_hit(hits, item.node, &ctx.lines);
+        }
+    }
+    Ok(())
+}
+
 fn rule_hits(
     rule: &Rule,
     cursor: &mut QueryCursor,
@@ -505,16 +546,7 @@ fn rule_hits(
                     if !predicates_hold(query, found) {
                         continue;
                     }
-                    for item in found.captures.iter().filter(|c| c.index == *capture) {
-                        let start = item.node.start_byte();
-                        let line = ctx.lines.index(start);
-                        hits.push(Hit {
-                            line,
-                            column: start - ctx.lines.starts[line],
-                            start,
-                            end: item.node.end_byte(),
-                        });
-                    }
+                    collect_query_hits(rule, ctx, query, found, *capture, &mut hits)?;
                 }
             }
             if cursor.did_exceed_match_limit() {
@@ -677,9 +709,10 @@ pub(crate) fn source(
     let mut ctx = FileCtx {
         text,
         lines: Lines::new(text),
-        tree,
+        tree: &tree,
         regions: None,
         masked: HashMap::new(),
+        conditions: crate::query_conditions::Evaluator::new(cursor.match_limit()),
     };
     let mut findings = Vec::new();
     let rules: Vec<(Option<usize>, &Rule)> = match only {
@@ -738,16 +771,9 @@ pub(crate) fn source(
                 if !predicates_hold(query, found) {
                     continue;
                 }
-                for item in found.captures.iter().filter(|c| c.index == group.capture) {
-                    let start = item.node.start_byte();
-                    let line = ctx.lines.index(start);
-                    hits.push(Hit {
-                        line,
-                        column: start - ctx.lines.starts[line],
-                        start,
-                        end: item.node.end_byte(),
-                    });
-                }
+                let rule = &engine.rules[group.pattern_rule[found.pattern_index]];
+                collect_query_hits(rule, &mut ctx, query, found, group.capture, hits)
+                    .map_err(fail)?;
             }
             if cursor.did_exceed_match_limit() {
                 return Err(fail("query match limit exceeded".into()));

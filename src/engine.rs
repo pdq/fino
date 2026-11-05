@@ -11,7 +11,7 @@ pub(crate) enum Matcher {
     /// `query` is compiled for strict loads (validate/test); fast loads compile it in a group.
     Query {
         query: Option<Query>,
-        capture: u32,
+        capture: Option<u32>,
     },
     Regex(fancy_regex::Regex),
     PathOnly,
@@ -49,6 +49,7 @@ pub struct Rule {
     pub(crate) skip_inside: Option<Query>,
     pub(crate) if_file: Option<Cond>,
     pub(crate) unless_file: Option<Cond>,
+    pub(crate) pipeline: crate::query_conditions::Pipeline,
     pub(crate) limit: Option<Limit>,
 }
 
@@ -56,7 +57,7 @@ pub struct Rule {
 pub(crate) struct Group {
     pub query: Query,
     pub pattern_rule: Vec<usize>,
-    pub capture: u32,
+    pub capture: Option<u32>,
 }
 
 pub struct Engine {
@@ -100,7 +101,10 @@ pub(crate) fn globs(patterns: &[String]) -> std::result::Result<GlobSet, String>
 /// non-comment children of a capture: `(#count-eq? @args 2)`.
 pub(crate) const COUNT_PREDICATES: [&str; 3] = ["count-eq?", "count-gt?", "count-lt?"];
 
-fn compile_query(text: &str, finding: bool) -> std::result::Result<(Query, Option<u32>), String> {
+pub(crate) fn compile_query(
+    text: &str,
+    finding: bool,
+) -> std::result::Result<(Query, Option<u32>), String> {
     let query = Query::new(&language(), text).map_err(|e| format!("invalid query: {e}"))?;
     for index in 0..query.pattern_count() {
         if !query.property_settings(index).is_empty()
@@ -271,18 +275,22 @@ fn compile_spec(
         });
     }
     let matcher = if let Some(text) = &spec.query {
-        if strict {
-            compile_query(text, true)
+        if strict
+            || !spec.conditions.is_empty()
+            || !spec.stages.is_empty()
+            || !spec.comparisons.is_empty()
+        {
+            compile_query(text, spec.stages.is_empty())
                 .map(|(query, capture)| Matcher::Query {
                     query: Some(query),
-                    capture: capture.unwrap_or_default(),
+                    capture,
                 })
                 .map_err(|e| errors.push(e))
                 .ok()
         } else {
             Some(Matcher::Query {
                 query: None,
-                capture: 0,
+                capture: None,
             })
         }
     } else if let Some(text) = &spec.regex {
@@ -309,6 +317,28 @@ fn compile_spec(
     });
     let if_file = compile_cond("if_file", &spec.if_file, errors);
     let unless_file = compile_cond("unless_file", &spec.unless_file, errors);
+    let pipeline =
+        if spec.conditions.is_empty() && spec.stages.is_empty() && spec.comparisons.is_empty() {
+            crate::query_conditions::Pipeline::default()
+        } else if let Some(Matcher::Query {
+            query: Some(query), ..
+        }) = &matcher
+        {
+            crate::query_conditions::compile(
+                &spec.conditions,
+                &spec.stages,
+                &spec.comparisons,
+                query,
+                errors,
+            )
+        } else {
+            errors.push(if !spec.conditions.is_empty() {
+                "conditions require a valid outer query".into()
+            } else {
+                "stages and comparisons require a valid outer query".into()
+            });
+            crate::query_conditions::Pipeline::default()
+        };
     for (n, test) in spec.tests.iter().enumerate() {
         if test.expect.contains(&0) {
             errors.push(format!(
@@ -354,6 +384,7 @@ fn compile_spec(
         skip_inside,
         if_file,
         unless_file,
+        pipeline,
         limit: spec.limit,
     })
 }
@@ -532,23 +563,26 @@ fn compile_group(rules: &[Rule], members: &[usize]) -> Option<Group> {
         spans.push((start, text.len(), i));
     }
     let (query, capture) = compile_query(&text, false).ok()?;
-    let capture = capture?;
     let mut pattern_rule = Vec::with_capacity(query.pattern_count());
     let mut has_finding = vec![false; rules.len()];
     for pattern in 0..query.pattern_count() {
         let offset = query.start_byte_for_pattern(pattern);
         let rule = spans.iter().find(|(s, e, _)| (*s..*e).contains(&offset))?.2;
-        if query.capture_quantifiers(pattern)[capture as usize]
-            != tree_sitter::CaptureQuantifier::Zero
-        {
+        if capture.is_some_and(|capture| {
+            query.capture_quantifiers(pattern)[capture as usize]
+                != tree_sitter::CaptureQuantifier::Zero
+        }) {
             has_finding[rule] = true;
         }
         pattern_rule.push(rule);
     }
-    // Every rule needs @finding; otherwise fall back to per-rule errors.
-    members.iter().all(|&i| has_finding[i]).then_some(Group {
-        query,
-        pattern_rule,
-        capture,
-    })
+    // Every rule needs an outer @finding or a validated stage-created finding.
+    members
+        .iter()
+        .all(|&i| has_finding[i] || rules[i].pipeline.stage_finding)
+        .then_some(Group {
+            query,
+            pattern_rule,
+            capture,
+        })
 }

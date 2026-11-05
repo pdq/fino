@@ -68,6 +68,7 @@ pub struct RuleFile {
     pub exclude: Vec<String>,
 
     /// Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.
+    /// When absent here, an ordered stage must export `finding` instead.
     /// Run `fino tree FILE` to see node kinds and field names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
@@ -107,6 +108,16 @@ pub struct RuleFile {
     /// Skip files where this condition matches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unless_file: Option<Condition>,
+    /// ANDed conditions on one capture of each outer query match. Query rules only.
+    /// Missing or repeated outer captures reject the match. Auxiliary captures stay local.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<QueryCondition>,
+    /// Ordered root-only queries over captured nodes. Exports feed later stages and conditions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<QueryStage>,
+    /// ANDed source-text comparisons after stages. Missing or repeated bindings reject the match.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparisons: Vec<BindingComparison>,
     /// Limit findings per file. Applied before suppression comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<Limit>,
@@ -211,6 +222,91 @@ pub struct Condition {
     /// Tree-sitter query. For `skip_lines`, lines where a non-`_` capture starts match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+}
+
+/// A query evaluated inside exactly one captured node, without exporting captures.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryCondition {
+    /// Outer capture or stage export name, without `@`.
+    pub capture: String,
+    /// Tree-sitter-recognized single-root patterns; no @finding capture is required.
+    /// Optimized wildcard-parent roots with children are unsupported; name the parent kind.
+    pub query: String,
+    /// Search the captured node and its descendants (default), or start only at its root.
+    #[serde(default)]
+    pub relation: QueryRelation,
+    /// Require a valid witness, or require exhaustive absence of witnesses.
+    pub expect: QueryExpectation,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum QueryRelation {
+    #[default]
+    DescendantOrSelf,
+    Root,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum QueryExpectation {
+    Exists,
+    Absent,
+}
+
+/// A root-only query after explicitly selected singleton wrappers are removed.
+/// Zero matches rejects the outer match; multiple matches fail the file.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryStage {
+    /// Exactly one outer capture or earlier stage export, without `@`.
+    pub from: String,
+    /// Tree-sitter-recognized single-root patterns. Every export occurs once per pattern.
+    /// Optimized wildcard-parent roots with children are unsupported; name the parent kind.
+    pub query: String,
+    /// Only root matching is supported; this does not search arbitrary descendants.
+    #[serde(default)]
+    pub relation: StageRelation,
+    /// Named node kinds to unwrap repeatedly when they have exactly one non-ignored named child.
+    #[serde(default)]
+    pub unwrap_singleton: Vec<String>,
+    /// Named child kinds ignored during unwrapping only. Defaults to comments.
+    #[serde(default = "default_ignored_children")]
+    pub ignore_children: Vec<String>,
+    /// Local capture names made available to later stages, comparisons, and conditions.
+    /// Names cannot collide with outer captures or earlier exports. Export `finding` only
+    /// when the outer query has none; its actual captured span becomes the finding.
+    #[serde(default)]
+    pub export: Vec<String>,
+}
+
+fn default_ignored_children() -> Vec<String> {
+    vec!["comment".into()]
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum StageRelation {
+    #[default]
+    Root,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BindingComparison {
+    /// Outer capture or stage export name, without `@`.
+    pub left: String,
+    /// Outer capture or stage export name, without `@`.
+    pub right: String,
+    pub operator: BindingOperator,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum BindingOperator {
+    TextEq,
+    TextNotEq,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
