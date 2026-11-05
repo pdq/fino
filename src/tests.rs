@@ -1344,3 +1344,326 @@ fn auxiliary_wildcard_parent_roots_are_explicitly_unsupported_not_assumed_siblin
         }
     }
 }
+
+const DIALECT: &str = r#"
+[[suppression_dialects]]
+id = "review"
+file = '#\s*review:\s*file\s+(?P<targets>.*)$'
+next_line = '#\s*review:\s*next\s+(?P<targets>.*)$'
+normalize_hyphens = true
+advance_consecutive = true
+"#;
+
+fn aliased_debug() -> String {
+    format!("{DEBUG}\n[compat.suppressions]\nreview = ['trace_call', 'old_trace']\n")
+}
+
+#[test]
+fn external_dialects_target_aliases_and_preserve_native_and_credo() {
+    let debug = format!("{}\n[compat]\ncredo = 'Example.Trace'\n", aliased_debug());
+    let other = "id = 'other'\nmessage = 'm'\nregex = 'IO'\n";
+    let config = format!("[compat]\ncredo_directives = true\n{DIALECT}");
+    let (_, engine) = project(&config, &[&debug, other]);
+    let text = "# review: next trace-call\nIO.inspect(1)\nIO.inspect(2)\n# review: next old-trace\nIO.inspect(3)\n";
+    let rows = lint(&engine, "a.ex", text).unwrap();
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r.rule == "debug")
+            .map(|r| r.line)
+            .collect::<Vec<_>>(),
+        [3]
+    );
+    assert_eq!(rows.iter().filter(|r| r.rule == "other").count(), 3);
+    for directive in [
+        "# review: file old_trace",
+        "# fino:disable-file debug",
+        "# credo:disable-for-this-file Example.Trace",
+    ] {
+        let rows = lint(&engine, "a.ex", &format!("{directive}\nIO.inspect(1)\n")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rule, "other");
+    }
+    // Neither an unknown target nor a rule id implicitly suppresses a rule.
+    assert_eq!(
+        lines(
+            &engine,
+            "a.ex",
+            "# review: file debug unknown\nIO.inspect(1)\n"
+        )
+        .len(),
+        2
+    );
+}
+
+#[test]
+fn external_dialect_chains_advance_only_across_recognized_adjacent_lines() {
+    let (_, on) = project(DIALECT, &[&aliased_debug()]);
+    let (_, off) = project(
+        &DIALECT.replace("advance_consecutive = true", "advance_consecutive = false"),
+        &[&aliased_debug()],
+    );
+    let text = "# review: next trace-call\n# review: next unrelated\nIO.inspect(1)\n# review: next trace_call\n# unrelated comment\nIO.inspect(2)\n# review: next trace_call\n\nIO.inspect(3)\n";
+    assert_eq!(lines(&on, "a.ex", text), [6, 9]);
+    assert_eq!(lines(&off, "a.ex", text), [3, 6, 9]);
+    let long_chain = format!(
+        "# review: next trace-call\n{}IO.inspect(1)\n",
+        "# review: next unknown\n".repeat(1000)
+    );
+    assert!(lines(&on, "a.ex", &long_chain).is_empty());
+    // Advancement is based on recognized directive lines, even with leading code.
+    assert_eq!(
+        lines(
+            &on,
+            "a.ex",
+            "# review: next trace-call\nIO.inspect(1) # review: next unknown\n"
+        ),
+        [2]
+    );
+}
+
+#[test]
+fn external_dialects_are_comment_only_unless_explicitly_legacy_raw() {
+    let (_, comments) = project(DIALECT, &[&aliased_debug()]);
+    let (_, raw) = project(
+        &format!("{DIALECT}\nraw_text = true\n"),
+        &[&aliased_debug()],
+    );
+    let source = "value = \"\"\"\n# review: file trace-call\n\"\"\"\nIO.inspect(1)\n";
+    assert_eq!(lines(&comments, "a.ex", source), [4]);
+    assert!(lines(&raw, "a.ex", source).is_empty());
+    assert!(
+        lines(
+            &comments,
+            "a.ex",
+            "IO.inspect(1) # review: file trace-call\n"
+        )
+        .is_empty()
+    );
+    let (_, no_normalization) = project(
+        &DIALECT.replace("normalize_hyphens = true", "normalize_hyphens = false"),
+        &[&aliased_debug()],
+    );
+    assert_eq!(
+        lines(
+            &no_normalization,
+            "a.ex",
+            "# review: file trace-call\nIO.inspect(1)\n"
+        ),
+        [2]
+    );
+}
+
+#[test]
+fn dialect_validation_and_malformed_targets_fail_closed() {
+    for definition in [
+        "id = 'review'",
+        "id = 'BAD'\nfile = '(?P<targets>x)'",
+        "id = 'review'\nfile = '['",
+        "id = 'review'\nfile = 'no_capture'",
+        "id = 'review'\nfile = '(?P<targets>.*)'",
+    ] {
+        let root = fixture();
+        let config = root.join("config.toml");
+        fs::write(&config, format!("[[suppression_dialects]]\n{definition}\n")).unwrap();
+        assert!(Engine::load(&config, None).is_err(), "{definition}");
+        assert!(Engine::load_fast(&config).is_err(), "{definition}");
+    }
+    let root = fixture();
+    let config = root.join("config.toml");
+    fs::write(&config, format!("{DIALECT}\n{DIALECT}")).unwrap();
+    assert!(Engine::load(&config, None).is_err());
+    let (_, engine) = project(DIALECT, &[&aliased_debug()]);
+    assert!(lint(&engine, "a.ex", "# review: file \nIO.inspect(1)\n").is_err());
+    // Optional captures that fail to participate are not treated as blanket suppressions.
+    let optional_capture =
+        "[[suppression_dialects]]\nid = 'review'\nfile = '# review(?P<targets> x)?'\n";
+    let (_, engine) = project(optional_capture, &[&aliased_debug()]);
+    assert!(lint(&engine, "a.ex", "# review\nIO.inspect(1)\n").is_err());
+
+    let path = root.join("debug.toml");
+    for alias in ["[]", "['']", "['two tokens']"] {
+        fs::write(
+            &path,
+            format!("{DEBUG}\n[compat.suppressions]\nreview = {alias}\n"),
+        )
+        .unwrap();
+        assert!(compile_rule(&path).0.is_none());
+    }
+    let rules = root.join("rules");
+    fs::create_dir(&rules).unwrap();
+    fs::write(rules.join("debug.toml"), aliased_debug()).unwrap();
+    fs::write(&config, "").unwrap();
+    for (_, problems) in [
+        Engine::load(&config, None).unwrap(),
+        Engine::load_fast(&config).unwrap(),
+    ] {
+        assert!(problems.iter().any(|p| {
+            p.errors
+                .iter()
+                .any(|e| e.contains("unknown suppression dialect"))
+        }));
+    }
+}
+
+#[test]
+fn regex_path_conditions_compose_with_globs_and_match_grouped_loading() {
+    let rule = format!(
+        "{DEBUG}\ninclude = ['lib/**/*.ex']\nexclude = ['lib/ignored']\nif_path = {{ regex = '(^|/)v[2-9]_[^/]+\\.ex$' }}\n[compat.suppressions]\nreview = ['trace_call']\n"
+    );
+    let (root, strict) = project(DIALECT, &[&rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()));
+    for (path, count) in [
+        ("lib/v2_sample.ex", 1),
+        ("lib/v1_sample.ex", 0),
+        ("lib/ignored/v2_sample.ex", 0),
+        ("other/v2_sample.ex", 0),
+    ] {
+        for text in [
+            "IO.inspect(1)\n",
+            "# review: next trace-call\nIO.inspect(1)\n",
+        ] {
+            let a = lint(&strict, path, text).unwrap();
+            assert_eq!(a, lint(&fast, path, text).unwrap());
+            assert_eq!(a.len(), if text.starts_with('#') { 0 } else { count });
+        }
+    }
+    let path = root.join("invalid.toml");
+    for value in ["{ regex = '[' }", "{ regex = '' }", "{}", "{ query = 'x' }"] {
+        fs::write(
+            &path,
+            format!("id = 'invalid'\nmessage = 'm'\npath_only = true\nif_path = {value}\n"),
+        )
+        .unwrap();
+        assert!(compile_rule(&path).0.is_none());
+    }
+    let rule = "id = 'path'\nmessage = 'm'\npath_only = true\nif_path = { regex = '^old/' }\n";
+    let engine = engine(&[rule]);
+    assert_eq!(lines(&engine, "old/a.ex", ":ok"), [1]);
+    assert!(lines(&engine, "new/a.ex", ":ok").is_empty());
+}
+
+#[test]
+fn auxiliary_count_predicates_still_apply_with_external_suppressions() {
+    let rule = format!(
+        "{}\nif_file = {{ query = '((list) @xs (#count-gt? @xs 1))' }}\nskip_lines = {{ query = '((list) @xs (#count-eq? @xs 1))' }}\n[compat.suppressions]\nreview = ['trace_call']\n",
+        DEBUG
+    );
+    let (root, strict) = project(DIALECT, &[&rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()));
+    for (source, expected) in [
+        ("IO.inspect([1])\n", vec![]),
+        ("IO.inspect([1, 2])\nIO.inspect([3])\n", vec![1]),
+        (
+            "# review: next trace-call\nIO.inspect([1, 2])\nIO.inspect([3])\n",
+            vec![],
+        ),
+    ] {
+        assert_eq!(lines(&strict, "a.ex", source), expected);
+        assert_eq!(
+            lint(&strict, "a.ex", source).unwrap(),
+            lint(&fast, "a.ex", source).unwrap()
+        );
+    }
+}
+
+#[test]
+fn dialects_are_independent_and_can_suppress_multiple_rule_aliases() {
+    let config = format!(
+        "{DIALECT}\n[[suppression_dialects]]\nid = 'audit'\nnext_line = '# audit (?P<targets>.+)'\n"
+    );
+    let debug = format!("{}\naudit = ['trace_call']\n", aliased_debug());
+    let other = "id = 'other'\nmessage = 'm'\nregex = 'IO'\n[compat.suppressions]\nreview = ['trace-call', 'another']\n";
+    let (_, engine) = project(&config, &[&debug, other]);
+    assert!(
+        lines(
+            &engine,
+            "a.ex",
+            "# review: next unknown trace_call\nIO.inspect(1)\n"
+        )
+        .is_empty()
+    );
+    let rows = lint(&engine, "a.ex", "# audit trace_call\nIO.inspect(1)\n").unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].rule, "other");
+    // Audit targets do not inherit the other dialect's normalization option.
+    assert_eq!(
+        lines(&engine, "a.ex", "# audit trace-call\nIO.inspect(1)\n").len(),
+        2
+    );
+}
+
+#[test]
+fn external_dialects_merge_resolved_targets_without_leaking_scope_or_normalization() {
+    let config = format!(
+        "{DIALECT}\n[[suppression_dialects]]\nid = 'audit'\nfile = '# audit: file (?P<targets>.+)'\nnext_line = '# audit: next (?P<targets>.+)'\nadvance_consecutive = true\n"
+    );
+    let debug = format!("{}\naudit = ['trace-call']\n", aliased_debug());
+    let other = "id = 'other'\nmessage = 'm'\nregex = 'IO'\n[compat.suppressions]\nreview = ['second-call']\n";
+    let (root, strict) = project(&config, &[&debug, other]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()));
+    for (source, expected) in [
+        (
+            "# review: next trace-call\n# review: next unknown\n# review: next second_call\nIO.inspect(1)\nIO.inspect(2)\n",
+            vec![("debug", 5), ("other", 5)],
+        ),
+        (
+            "# review: file unknown\n# review: file second_call\n# audit: file trace_call\nIO.inspect(1)\n",
+            vec![("debug", 4)],
+        ),
+        (
+            "# review: next second_call\n# audit: next trace-call\nIO.inspect(1)\n",
+            vec![("other", 3)],
+        ),
+        (
+            "# review: file unknown\n# review: file trace-call\n# review: file second_call\nIO.inspect(1)\n",
+            vec![],
+        ),
+    ] {
+        let rows = lint(&strict, "a.ex", source).unwrap();
+        assert_eq!(rows, lint(&fast, "a.ex", source).unwrap());
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.rule.as_str(), row.line))
+                .collect::<Vec<_>>(),
+            expected,
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn legacy_raw_dialects_and_rule_examples_match_grouped_loading() {
+    let rule = format!(
+        r#"{}
+[[tests]]
+name = 'file alias'
+code = '''# review: file trace-call
+IO.inspect(1)'''
+expect = []
+[[tests]]
+name = 'finding'
+code = 'IO.inspect(1)'
+expect = [1]
+"#,
+        aliased_debug()
+    );
+    let (root, strict) = project(&format!("{DIALECT}\nraw_text = true\n"), &[&rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()));
+    let source = "value = \"\"\"\n# review: next trace-call\n\"\"\"\nIO.inspect(1)\n";
+    assert_eq!(lines(&strict, "a.ex", source), [4]);
+    assert_eq!(
+        lint(&strict, "a.ex", source).unwrap(),
+        lint(&fast, "a.ex", source).unwrap()
+    );
+    let source = "value = \"\"\"\n# review: file trace-call\n\"\"\"\nIO.inspect(1)\n";
+    assert!(lines(&strict, "a.ex", source).is_empty());
+    assert_eq!(
+        lint(&strict, "a.ex", source).unwrap(),
+        lint(&fast, "a.ex", source).unwrap()
+    );
+    assert!(run_tests(&strict).iter().all(|outcome| outcome.passed));
+}

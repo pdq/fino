@@ -43,6 +43,13 @@
       "description": "Committable violation snapshot, relative to this config file.",
       "type": "string",
       "default": "snapshot.jsonl"
+    },
+    "suppression_dialects": {
+      "description": "External suppression syntax. Only suppresses rules declaring aliases for the dialect.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/SuppressionDialect"
+      }
     }
   },
   "additionalProperties": false,
@@ -57,6 +64,49 @@
         }
       },
       "additionalProperties": false
+    },
+    "SuppressionDialect": {
+      "description": "Data-defined suppression syntax. Each regex must capture a nonempty `targets` group.",
+      "type": "object",
+      "properties": {
+        "advance_consecutive": {
+          "description": "Advance next-line directives over consecutive recognized next-line directives.",
+          "type": "boolean",
+          "default": false
+        },
+        "file": {
+          "description": "Rust regex matching file-wide directives. Capture whitespace-separated targets as `targets`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+        },
+        "next_line": {
+          "description": "Regex matching directives that suppress the following physical line.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "normalize_hyphens": {
+          "description": "Normalize hyphens to underscores in both directive targets and rule aliases.",
+          "type": "boolean",
+          "default": false
+        },
+        "raw_text": {
+          "description": "Explicit legacy mode: scan raw source lines, including strings, instead of comments.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ]
     }
   }
 }

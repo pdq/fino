@@ -59,6 +59,17 @@
         }
       ]
     },
+    "if_path": {
+      "description": "Only lint root-relative paths matching this Rust regex (in addition to include/exclude globs).",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PathCondition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "include": {
       "description": "Only lint files matching these root-relative globs (default: every configured file).",
       "type": "array",
@@ -335,6 +346,18 @@
         }
       ]
     },
+    "PathCondition": {
+      "type": "object",
+      "properties": {
+        "regex": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "regex"
+      ]
+    },
     "QueryCondition": {
       "description": "A query evaluated inside exactly one captured node, without exporting captures.",
       "type": "object",
@@ -449,6 +472,16 @@
             "string",
             "null"
           ]
+        },
+        "suppressions": {
+          "description": "Dialect id to accepted target aliases. Targets are whitespace-separated, not rule ids.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "additionalProperties": false

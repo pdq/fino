@@ -1,5 +1,6 @@
 //! Suppression comments: native `# fino:` directives and, optionally,
 //! Credo's `# credo:disable-for-*` comments (same semantics as Credo 1.7).
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 
@@ -8,6 +9,65 @@ pub(crate) struct Directives {
     file: BTreeSet<String>,
     lines: BTreeMap<usize, BTreeSet<String>>,
     credo: Vec<CredoDirective>,
+    external: BTreeMap<Option<usize>, BTreeMap<String, ExternalTargets>>,
+}
+
+pub(crate) struct Dialect {
+    id: String,
+    file: Option<regex::Regex>,
+    next_line: Option<regex::Regex>,
+    pub raw_text: bool,
+    normalize_hyphens: bool,
+    advance_consecutive: bool,
+}
+
+struct ExternalTargets {
+    targets: BTreeSet<String>,
+    normalize_hyphens: bool,
+}
+
+impl Dialect {
+    pub fn compile(spec: &crate::model::SuppressionDialect) -> Result<Self, String> {
+        let compile = |text: &Option<String>| -> Result<Option<regex::Regex>, String> {
+            let Some(text) = text else { return Ok(None) };
+            let regex = regex::Regex::new(text)
+                .map_err(|e| format!("suppression dialect {}: {e}", spec.id))?;
+            if !regex
+                .capture_names()
+                .flatten()
+                .any(|name| name == "targets")
+                || regex.is_match("")
+            {
+                return Err(format!(
+                    "suppression dialect {}: regex needs a targets capture and must not match empty input",
+                    spec.id
+                ));
+            }
+            Ok(Some(regex))
+        };
+        if spec.file.is_none() && spec.next_line.is_none() {
+            return Err(format!(
+                "suppression dialect {} needs file or next_line",
+                spec.id
+            ));
+        }
+        Ok(Self {
+            id: spec.id.clone(),
+            file: compile(&spec.file)?,
+            next_line: compile(&spec.next_line)?,
+            raw_text: spec.raw_text,
+            normalize_hyphens: spec.normalize_hyphens,
+            advance_consecutive: spec.advance_consecutive,
+        })
+    }
+}
+
+fn normalize(target: &str, hyphens: bool) -> Cow<'_, str> {
+    if hyphens && target.contains('-') {
+        Cow::Owned(target.replace('-', "_"))
+    } else {
+        Cow::Borrowed(target)
+    }
 }
 
 struct CredoDirective {
@@ -26,6 +86,82 @@ static CREDO: LazyLock<regex::Regex> = LazyLock::new(|| {
 });
 
 impl Directives {
+    /// Scan each dialect independently. Unknown targets still advance recognized directive chains.
+    pub fn add_external(
+        &mut self,
+        dialect: &Dialect,
+        inputs: &[(&str, usize)],
+    ) -> Result<(), String> {
+        let mut pending = Vec::new();
+        let mut recognized = BTreeSet::new();
+        for &(text, line) in inputs {
+            for (regex, file) in [(&dialect.file, true), (&dialect.next_line, false)] {
+                let Some(regex) = regex else { continue };
+                for captures in regex.captures_iter(text) {
+                    let targets: BTreeSet<_> = captures
+                        .name("targets")
+                        .into_iter()
+                        .flat_map(|value| value.as_str().split_whitespace())
+                        .map(|value| normalize(value, dialect.normalize_hyphens).into_owned())
+                        .collect();
+                    if targets.is_empty() {
+                        return Err(format!(
+                            "suppression dialect {}: directive on line {line} needs targets",
+                            dialect.id
+                        ));
+                    }
+                    if !file {
+                        recognized.insert(line);
+                    }
+                    pending.push((if file { None } else { Some(line + 1) }, targets));
+                }
+            }
+        }
+        // Resolve chain ends once, rather than scanning each suffix of a long chain.
+        let mut ends = BTreeMap::new();
+        if dialect.advance_consecutive {
+            for &line in recognized.iter().rev() {
+                ends.insert(line, ends.get(&(line + 1)).copied().unwrap_or(line + 1));
+            }
+        }
+        for (line, targets) in pending {
+            let line = line.map(|line| ends.get(&line).copied().unwrap_or(line));
+            self.external
+                .entry(line)
+                .or_default()
+                .entry(dialect.id.clone())
+                .or_insert_with(|| ExternalTargets {
+                    targets: BTreeSet::new(),
+                    normalize_hyphens: dialect.normalize_hyphens,
+                })
+                .targets
+                .extend(targets);
+        }
+        Ok(())
+    }
+
+    pub fn external_disabled(
+        &self,
+        aliases: &BTreeMap<String, Vec<String>>,
+        line: Option<usize>,
+    ) -> bool {
+        if aliases.is_empty() {
+            return false;
+        }
+        let Some(dialects) = self.external.get(&line) else {
+            return false;
+        };
+        aliases.iter().any(|(dialect, targets)| {
+            dialects.get(dialect).is_some_and(|directive| {
+                targets.iter().any(|target| {
+                    directive
+                        .targets
+                        .contains(normalize(target, directive.normalize_hyphens).as_ref())
+                })
+            })
+        })
+    }
+
     /// Parse one comment. Returns an error message for malformed native directives.
     pub fn add_comment(
         &mut self,

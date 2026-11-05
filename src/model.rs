@@ -22,6 +22,32 @@ pub struct ProjectConfig {
     /// Compatibility switches for migrating from other linters.
     #[serde(default)]
     pub compat: ProjectCompat,
+    /// External suppression syntax. Only suppresses rules declaring aliases for the dialect.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppression_dialects: Vec<SuppressionDialect>,
+}
+
+/// Data-defined suppression syntax. Each regex must capture a nonempty `targets` group.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SuppressionDialect {
+    #[schemars(regex(pattern = r"^[a-z0-9]+(-[a-z0-9]+)*$"))]
+    pub id: String,
+    /// Rust regex matching file-wide directives. Capture whitespace-separated targets as `targets`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// Regex matching directives that suppress the following physical line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_line: Option<String>,
+    /// Explicit legacy mode: scan raw source lines, including strings, instead of comments.
+    #[serde(default)]
+    pub raw_text: bool,
+    /// Normalize hyphens to underscores in both directive targets and rule aliases.
+    #[serde(default)]
+    pub normalize_hyphens: bool,
+    /// Advance next-line directives over consecutive recognized next-line directives.
+    #[serde(default)]
+    pub advance_consecutive: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]
@@ -118,6 +144,9 @@ pub struct RuleFile {
     /// ANDed source-text comparisons after stages. Missing or repeated bindings reject the match.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comparisons: Vec<BindingComparison>,
+    /// Only lint root-relative paths matching this Rust regex (in addition to include/exclude globs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub if_path: Option<PathCondition>,
     /// Limit findings per file. Applied before suppression comments.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<Limit>,
@@ -315,6 +344,15 @@ pub struct RuleCompat {
     /// Fully qualified Credo check name, e.g. `Credo.Check.Warning.IoInspect`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credo: Option<String>,
+    /// Dialect id to accepted target aliases. Targets are whitespace-separated, not rule ids.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub suppressions: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PathCondition {
+    pub regex: String,
 }
 
 /// An example source file and the lines where the rule must report findings.

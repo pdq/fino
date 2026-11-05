@@ -680,7 +680,15 @@ pub(crate) fn source(
             .as_bytes()
             .windows(6)
             .any(|w| w.eq_ignore_ascii_case(b"credo:"));
-    let mut nodes = if tree.root_node().has_error() || text.contains("fino:") || wants_credo {
+    let mut comments = Vec::new();
+    let mut nodes = if tree.root_node().has_error()
+        || text.contains("fino:")
+        || wants_credo
+        || engine
+            .suppression_dialects
+            .iter()
+            .any(|dialect| !dialect.raw_text)
+    {
         vec![tree.root_node()]
     } else {
         Vec::new()
@@ -696,6 +704,7 @@ pub(crate) fn source(
             ));
         }
         if node.kind() == "comment" {
+            comments.push((&text[node.byte_range()], point.row + 1));
             directives
                 .add_comment(&text[node.byte_range()], point.row + 1, &known, wants_credo)
                 .map_err(|message| diagnostic(file, point.row + 1, point.column + 1, message))?;
@@ -705,6 +714,30 @@ pub(crate) fn source(
     }
     if tree.root_node().has_error() {
         return Err(fail("Elixir parse was incomplete".into()));
+    }
+    let raw_lines: Vec<_> = if engine
+        .suppression_dialects
+        .iter()
+        .any(|dialect| dialect.raw_text)
+    {
+        text.lines()
+            .enumerate()
+            .map(|(index, line)| (line, index + 1))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for dialect in &engine.suppression_dialects {
+        directives
+            .add_external(
+                dialect,
+                if dialect.raw_text {
+                    &raw_lines
+                } else {
+                    &comments
+                },
+            )
+            .map_err(fail)?;
     }
     let mut ctx = FileCtx {
         text,
@@ -730,6 +763,11 @@ pub(crate) fn source(
         if (!rule.include.is_empty() && !rule.include.is_match(file))
             || path_excluded(&rule.exclude, Path::new(file))
             || directives.file_disabled(&rule.id, credo)
+            || directives.external_disabled(&rule.suppressions, None)
+            || rule
+                .if_path
+                .as_ref()
+                .is_some_and(|regex| !regex.is_match(file))
         {
             continue;
         }
@@ -797,6 +835,9 @@ pub(crate) fn source(
         for hit in hits {
             let line = hit.line + 1;
             if directives.line_disabled(&rule.id, credo, line) {
+                continue;
+            }
+            if directives.external_disabled(&rule.suppressions, Some(line)) {
                 continue;
             }
             findings.push(Finding {

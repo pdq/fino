@@ -37,6 +37,8 @@ pub struct Rule {
     pub file: PathBuf,
     pub tests: Vec<RuleTest>,
     pub(crate) credo: Option<String>,
+    pub(crate) suppressions: std::collections::BTreeMap<String, Vec<String>>,
+    pub(crate) if_path: Option<regex::Regex>,
     pub(crate) include: GlobSet,
     pub(crate) exclude: GlobSet,
     pub(crate) matcher: Matcher,
@@ -70,6 +72,7 @@ pub struct Engine {
     pub(crate) include: GlobSet,
     pub(crate) exclude: GlobSet,
     pub(crate) credo_directives: bool,
+    pub(crate) suppression_dialects: Vec<crate::directives::Dialect>,
 }
 
 /// Problems found while compiling one rule file. Warnings never block a run.
@@ -339,6 +342,30 @@ fn compile_spec(
             });
             crate::query_conditions::Pipeline::default()
         };
+    let if_path = spec.if_path.as_ref().and_then(|condition| {
+        if condition.regex.trim().is_empty() {
+            errors.push("if_path.regex must not be empty".into());
+            return None;
+        }
+        regex::Regex::new(&condition.regex)
+            .map_err(|e| errors.push(format!("if_path.regex: {e}")))
+            .ok()
+    });
+    if let Some(compat) = &spec.compat {
+        for (dialect, aliases) in &compat.suppressions {
+            if !valid_id(dialect)
+                || aliases.is_empty()
+                || aliases
+                    .iter()
+                    .any(|alias| alias.is_empty() || alias.chars().any(char::is_whitespace))
+            {
+                errors.push(
+                    "suppression aliases need a valid dialect id and nonempty single-token targets"
+                        .into(),
+                );
+            }
+        }
+    }
     for (n, test) in spec.tests.iter().enumerate() {
         if test.expect.contains(&0) {
             errors.push(format!(
@@ -371,7 +398,9 @@ fn compile_spec(
         severity: spec.severity,
         file: path.to_path_buf(),
         tests: spec.tests,
-        credo: spec.compat.and_then(|c| c.credo),
+        credo: spec.compat.as_ref().and_then(|c| c.credo.clone()),
+        suppressions: spec.compat.map(|c| c.suppressions).unwrap_or_default(),
+        if_path,
         include: include?,
         exclude: exclude?,
         matcher: matcher?,
@@ -430,6 +459,14 @@ impl Engine {
         strict: bool,
     ) -> std::result::Result<(Self, Vec<Problems>), String> {
         let config = load_config(config_path)?;
+        let mut dialect_ids = BTreeSet::new();
+        let mut suppression_dialects = Vec::new();
+        for dialect in &config.suppression_dialects {
+            if !valid_id(&dialect.id) || !dialect_ids.insert(dialect.id.as_str()) {
+                return Err("suppression dialect ids must be valid and unique".into());
+            }
+            suppression_dialects.push(crate::directives::Dialect::compile(dialect)?);
+        }
         let dir = config_path.parent().unwrap_or_else(|| Path::new("."));
         let files = match only {
             Some(files) => files.to_vec(),
@@ -445,6 +482,17 @@ impl Engine {
             .collect();
         for (rule, mut found) in compiled {
             if let Some(rule) = rule {
+                for dialect in rule.suppressions.keys() {
+                    if !dialect_ids.contains(dialect.as_str()) {
+                        found
+                            .errors
+                            .push(format!("unknown suppression dialect {dialect:?}"));
+                    }
+                }
+                if !found.errors.is_empty() {
+                    problems.push(found);
+                    continue;
+                }
                 if ids.insert(rule.id.clone()) {
                     rules.push(rule);
                 } else {
@@ -473,6 +521,7 @@ impl Engine {
             include: globs(&config.include)?,
             exclude: globs(&config.exclude)?,
             credo_directives: config.compat.credo_directives,
+            suppression_dialects,
         };
         Ok((engine, problems))
     }
