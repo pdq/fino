@@ -127,6 +127,8 @@ pub fn definition() -> Command {
         .subcommand(command("tree", "Print a syntax tree from FILE, - (stdin), or --code SOURCE", "FILE"))
         .subcommand(command("schema", "Print the JSON Schema for rule or config files", "KIND")
              .mut_arg("files", |arg| arg.value_parser(["rule", "config"]).value_hint(ValueHint::Unknown)))
+        .subcommand(command("skills", "Discover agent skills or print a portable SKILL.md (rules or config)", "TOPIC")
+            .mut_arg("files", |arg| arg.num_args(0..=1).value_parser(["rules", "config"]).value_hint(ValueHint::Unknown)))
 }
 
 pub fn parse() -> Result<Option<Args>> {

@@ -1,6 +1,7 @@
 mod cli;
 mod output;
 mod profile;
+mod skills;
 
 use cli::Args;
 use fino::model::{ProjectConfig, RuleFile};
@@ -33,6 +34,7 @@ fn run() -> Result<i32> {
         "test" => test(&args, &config),
         "tree" => tree(&args),
         "schema" => schema(&args),
+        "skills" => skills::run(&args),
         other => Err(format!("unknown command {other:?}; see --help")),
     }
 }

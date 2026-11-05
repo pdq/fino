@@ -67,12 +67,28 @@ fino test [RULE_FILES...]
 fino tree FILE
 fino tree --code 'IO.inspect(x)'
 fino schema rule                 # also: config
+fino skills                      # discover agent guides; print with: fino skills rules|config
 ```
 
 Exit codes: **0** pass, **1** new violations or failed examples, **2** invalid policy,
 unreadable selected files, or parse errors. `check` never writes files. Explicit
 file lists skip unsupported and excluded files, making them suitable for hooks.
 Paths must be relative to `--root` (default `.`).
+
+### Agent skills and guides
+
+Install the separate rule-authoring and project-configuration skills through
+[Vercel's Skills CLI](https://github.com/vercel-labs/skills):
+
+```sh
+aubx skills add pdqcom/fino --list
+aubx skills add pdqcom/fino --skill fino-rules fino-config
+```
+
+`fino skills rules` and `fino skills config` print the same portable `SKILL.md`
+guides offline, directly from the binary. `fino skills --json` exposes both for
+automation. See [writing rules](docs/rules.md), [configuration](docs/configuration.md),
+and the [runnable generic examples](examples/rules/.fino/rules/).
 
 ### Rule cost profiling
 

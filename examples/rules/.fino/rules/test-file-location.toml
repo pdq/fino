@@ -1,0 +1,23 @@
+id = "test-file-location"
+message = "Move test files into test/."
+description = "Keep test files out of the application's lib/ directory."
+include = ["lib/**/*_test.exs"]
+path_only = true
+
+[[tests]]
+name = "reports misplaced test"
+path = "lib/example_test.exs"
+code = ":ok\n"
+expect = [1]
+
+[[tests]]
+name = "allows test directory"
+path = "test/example_test.exs"
+code = ":ok\n"
+expect = []
+
+[[tests]]
+name = "allows application source"
+path = "lib/example.ex"
+code = ":ok\n"
+expect = []
