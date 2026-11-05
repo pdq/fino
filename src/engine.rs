@@ -467,8 +467,7 @@ fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
     if query_rules.is_empty() {
         return Vec::new();
     }
-    let count = std::thread::available_parallelism()
-        .map_or(1, usize::from)
+    let count = rayon::current_num_threads()
         .clamp(1, 8)
         .min(query_rules.len());
     // Balance groups by query length, a rough proxy for compile cost.
@@ -491,6 +490,11 @@ fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
             Ok(group) => groups.push(group),
             Err(members) => {
                 for i in members {
+                    // A bad member must not make valid neighbors look invalid.
+                    if let Some(group) = compile_group(rules, &[i]) {
+                        groups.push(group);
+                        continue;
+                    }
                     let text = rules[i].query_text.as_deref().unwrap_or_default();
                     let error = compile_query(text, true)
                         .err()

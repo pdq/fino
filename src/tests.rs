@@ -502,12 +502,26 @@ fn fast_grouped_loading_matches_strict_loading() {
         "id = \"broken\"\nmessage = \"m\"\nquery = '(not_a_node) @finding'\n",
     )
     .unwrap();
-    let (_, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
-    let errors: Vec<_> = problems
-        .iter()
-        .filter(|p| !p.errors.is_empty())
-        .map(|p| p.file.clone())
-        .collect();
-    assert_eq!(errors.len(), 1);
-    assert!(errors[0].ends_with("broken.toml"));
+    for workers in [1, 2, 4] {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(workers)
+            .build()
+            .unwrap();
+        let (engine, problems) = pool
+            .install(|| Engine::load_fast(&root.join(".fino/config.toml")))
+            .unwrap();
+        let errors: Vec<_> = problems
+            .iter()
+            .filter(|p| !p.errors.is_empty())
+            .map(|p| p.file.clone())
+            .collect();
+        assert_eq!(errors.len(), 1, "{workers} workers: {problems:?}");
+        assert!(errors[0].ends_with("broken.toml"));
+        let grouped: std::collections::BTreeSet<_> = engine
+            .groups
+            .iter()
+            .flat_map(|g| g.pattern_rule.iter().map(|&i| engine.rules[i].id.as_str()))
+            .collect();
+        assert_eq!(grouped, ["debug", "marker"].into_iter().collect());
+    }
 }

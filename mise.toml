@@ -6,7 +6,7 @@ dprint = "0.64.3"
 betterleaks = "1.10.0"
 hk = "2.11.1"
 pitchfork = "2.33.1"
-rust = "1.99.1"
+rust = { version = "1.99.1", profile = "minimal", components = ["clippy", "rustfmt"] }
 jactionlint = "2.4.0"
 
 [hooks]
