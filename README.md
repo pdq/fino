@@ -75,16 +75,17 @@ Paths must be relative to `--root` (default `.`).
 
 Choose exactly one matcher: `query`, `regex`, or `path_only = true`.
 
-| Field                        | Purpose                                                    |
-| ---------------------------- | ---------------------------------------------------------- |
-| `include` / `exclude`        | Select paths for a rule                                    |
-| `scope = "line"`             | Apply a regex per line                                     |
-| `mask`                       | Blank or remove strings, comments, or query-selected nodes |
-| `prefilter`                  | Cheap regex on raw text before expensive matching          |
-| `skip_lines` / `skip_inside` | Ignore selected lines or nodes                             |
-| `if_file` / `unless_file`    | File-level regex or query conditions                       |
-| `limit = "first-per-file"`   | Report only the first match                                |
-| `severity = "warning"`       | Report without failing checks                              |
+| Field                        | Purpose                                                           |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `include` / `exclude`        | Select paths for a rule                                           |
+| `scope = "line"`             | Apply a regex per line                                            |
+| `mask`                       | Blank or remove strings, comments, or query-selected nodes        |
+| `match_length`               | Inclusive masked-match length bounds: bytes, scalars or graphemes |
+| `prefilter`                  | Cheap regex on raw text before expensive matching                 |
+| `skip_lines` / `skip_inside` | Ignore selected lines or nodes                                    |
+| `if_file` / `unless_file`    | File-level regex or query conditions                              |
+| `limit = "first-per-file"`   | Report only the first match                                       |
+| `severity = "warning"`       | Report without failing checks                                     |
 
 Each `@finding` capture produces a finding. Queries support tree-sitter text
 predicates and `#count-eq?`, `#count-gt?`, `#count-lt?` for named children, excluding

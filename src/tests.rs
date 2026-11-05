@@ -525,3 +525,164 @@ fn fast_grouped_loading_matches_strict_loading() {
         assert_eq!(grouped, ["debug", "marker"].into_iter().collect());
     }
 }
+
+#[test]
+fn regex_match_length_measures_only_the_match_in_the_selected_unicode_unit() {
+    let text = "# x\n# é\n# e\u{301}\n# 👩‍💻\n";
+    for (unit, expected) in [
+        (Some("bytes"), vec![1]),
+        (Some("scalars"), vec![1, 2]),
+        (Some("graphemes"), vec![1, 2, 3, 4]),
+        (None, vec![1, 2]),
+    ] {
+        for scope in ["line", "file"] {
+            let unit = unit
+                .map(|unit| format!(", unit = '{unit}'"))
+                .unwrap_or_default();
+            let rule = format!(
+                "id = 'measured'\nmessage = 'Selected length.'\nregex = '(?m)(?<=# )[^\\n]*'\nscope = '{scope}'\nmatch_length = {{ min = 1, max = 1{unit} }}\n"
+            );
+            let (root, strict) = project("", &[&rule]);
+            let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+            assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+            let rows = lint(&strict, "a.ex", text).unwrap();
+            assert_eq!(
+                rows.iter().map(|row| row.line).collect::<Vec<_>>(),
+                expected,
+                "{scope}: {unit}"
+            );
+            assert!(rows.iter().all(|row| row.column == 3));
+            assert_eq!(rows, lint(&fast, "a.ex", text).unwrap());
+        }
+    }
+}
+
+#[test]
+fn regex_match_length_has_inclusive_ascii_bounds_and_a_safe_scalar_prefilter() {
+    let text = format!(
+        "#{}\n#{}\n#{}\n#{}\n#{}\n",
+        "x".repeat(119),
+        "x".repeat(120),
+        "x".repeat(121),
+        "e\u{301}".repeat(60),
+        "👩‍💻".repeat(40)
+    );
+    for (upper, expected) in [("", vec![2, 3]), (", max = 121", vec![2])] {
+        let rule = format!(
+            "id = 'boundary'\nmessage = 'Long text.'\nregex = '^.*$'\nscope = 'line'\nprefilter = '.{{121}}'\nmatch_length = {{ min = 121{upper}, unit = 'graphemes' }}\n"
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert_eq!(lines(engine, "a.ex", &text), expected);
+        }
+    }
+}
+
+#[test]
+fn regex_match_length_runs_after_masking_and_keeps_existing_finding_coordinates() {
+    for scope in ["line", "file"] {
+        for (mask, bounds, expected_end) in [
+            ("", "min = 4, max = 4", None),
+            ("mask = { nodes = ['string'] }", "min = 4, max = 4", Some(8)),
+            (
+                "mask = { nodes = ['string'], with = '' }",
+                "min = 2, max = 2",
+                Some(6),
+            ),
+        ] {
+            let rule = format!(
+                "id = 'masked-length'\nmessage = 'Masked match.'\nregex = '\"[^\"]*\"'\nscope = '{scope}'\n{mask}\nmatch_length = {{ {bounds}, unit = 'graphemes' }}\n"
+            );
+            let (root, strict) = project("", &[&rule]);
+            let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+            for engine in [&strict, &fast] {
+                let text = if mask.contains("with") {
+                    "x = \"payload\"\n"
+                } else {
+                    "x = \"é\"\n"
+                };
+                let rows = lint(engine, "a.ex", text).unwrap();
+                if let Some(end) = expected_end {
+                    assert_eq!(rows.len(), 1);
+                    assert_eq!(
+                        (
+                            rows[0].line,
+                            rows[0].column,
+                            rows[0].start_byte,
+                            rows[0].end_byte
+                        ),
+                        (1, 5, 4, end)
+                    );
+                } else {
+                    assert!(rows.is_empty());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn regex_match_length_in_file_scope_includes_matched_newlines_not_line_newlines() {
+    let text = "# a\n# b\n";
+    for (scope, expected) in [("file", vec![1]), ("line", vec![])] {
+        let rule = format!(
+            "id = 'whole-match'\nmessage = 'Whole match.'\nregex = '(?s)^.*$'\nscope = '{scope}'\nmatch_length = {{ min = 8, max = 8, unit = 'bytes' }}\n"
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert_eq!(lines(engine, "a.ex", text), expected);
+        }
+    }
+}
+
+#[test]
+fn regex_match_length_validation_fails_closed_in_both_loading_modes() {
+    for (matcher, bounds, expected) in [
+        (
+            "query = '(identifier) @finding'",
+            "min = 1",
+            "match_length only applies to regex rules",
+        ),
+        (
+            "path_only = true",
+            "min = 1",
+            "match_length only applies to regex rules",
+        ),
+        (
+            "regex = 'x'",
+            "",
+            "match_length: text length requires a minimum or maximum",
+        ),
+        (
+            "regex = 'x'",
+            "min = 3, max = 2",
+            "match_length: text length minimum must not exceed maximum",
+        ),
+        ("regex = 'x'", "min = -1", "invalid value"),
+        ("regex = 'x'", "unit = 'cells', min = 1", "unknown variant"),
+    ] {
+        let (root, _) = project("", &[]);
+        fs::write(root.join(".fino/rules/invalid.toml"), format!("id = 'invalid'\nmessage = 'Invalid length.'\n{matcher}\nmatch_length = {{ {bounds} }}\n")).unwrap();
+        for strict in [true, false] {
+            let (_, problems) = if strict {
+                Engine::load(&root.join(".fino/config.toml"), None)
+            } else {
+                Engine::load_fast(&root.join(".fino/config.toml"))
+            }
+            .unwrap();
+            assert!(
+                problems
+                    .iter()
+                    .flat_map(|p| &p.errors)
+                    .any(|error| error.contains(expected)),
+                "{problems:?}"
+            );
+        }
+    }
+    let engine = engine(&[
+        "id = 'syntax'\nmessage = 'Still invalid.'\nregex = 'never'\nmatch_length = { min = 100 }\n",
+    ]);
+    assert!(lint(&engine, "broken.ex", "defmodule (\n").is_err());
+}

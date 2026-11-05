@@ -7,6 +7,7 @@ pub mod model;
 mod scan;
 mod snapshot;
 mod testing;
+pub mod text_length;
 mod tree;
 
 pub use engine::{Engine, Problems, Rule, compile_rule, load_config, rule_files};

@@ -83,6 +83,10 @@ pub struct RuleFile {
     /// it must match the raw text whenever `regex` matches the masked text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefilter: Option<String>,
+    /// For `regex`: inclusive length bounds on each matched substring after masking.
+    /// Measures bytes, Unicode scalars (default), or extended grapheme clusters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_length: Option<crate::text_length::TextLength>,
     /// For `regex`: match the whole file (default) or each line separately.
     #[serde(default)]
     pub scope: Scope,

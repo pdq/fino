@@ -42,6 +42,7 @@ pub struct Rule {
     pub(crate) matcher: Matcher,
     pub(crate) query_text: Option<String>,
     pub(crate) prefilter: Option<regex::Regex>,
+    pub(crate) match_length: Option<crate::text_length::CompiledTextLength>,
     pub(crate) scope: Scope,
     pub(crate) masks: Vec<MaskLayer>,
     pub(crate) skip_lines: Option<Cond>,
@@ -231,6 +232,14 @@ fn compile_spec(
     {
         errors.push("scope, mask and prefilter only apply to regex rules".into());
     }
+    if spec.regex.is_none() && spec.match_length.is_some() {
+        errors.push("match_length only applies to regex rules".into());
+    }
+    let match_length = spec.match_length.as_ref().and_then(|length| {
+        crate::text_length::compile(length)
+            .map_err(|error| errors.push(format!("match_length: {error}")))
+            .ok()
+    });
     let mut masks = Vec::new();
     for (n, mask) in spec.mask.iter().flat_map(|m| m.layers()).enumerate() {
         if mask.nodes.is_empty() && mask.query.is_none() {
@@ -338,6 +347,7 @@ fn compile_spec(
         matcher: matcher?,
         query_text: spec.query,
         prefilter,
+        match_length,
         scope: spec.scope,
         masks,
         skip_lines,

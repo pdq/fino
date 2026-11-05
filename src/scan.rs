@@ -554,6 +554,12 @@ fn rule_hits(
                     for found in regex.find_iter(&subject) {
                         let found =
                             found.map_err(|e| format!("regex failed for {}: {e}", rule.id))?;
+                        if rule
+                            .match_length
+                            .is_some_and(|length| !length.matches(found.as_str()))
+                        {
+                            continue;
+                        }
                         let line = lines.index(found.start());
                         push(
                             line,
@@ -568,6 +574,12 @@ fn rule_hits(
                         for found in regex.find_iter(lines.line(line)) {
                             let found =
                                 found.map_err(|e| format!("regex failed for {}: {e}", rule.id))?;
+                            if rule
+                                .match_length
+                                .is_some_and(|length| !length.matches(found.as_str()))
+                            {
+                                continue;
+                            }
                             push(line, found.start(), found.end() - found.start());
                         }
                     }

@@ -74,6 +74,17 @@
         }
       ]
     },
+    "match_length": {
+      "description": "For `regex`: inclusive length bounds on each matched substring after masking.\nMeasures bytes, Unicode scalars (default), or extended grapheme clusters.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TextLength"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "message": {
       "description": "Message reported for each finding.",
       "type": "string"
@@ -184,6 +195,14 @@
         }
       },
       "additionalProperties": false
+    },
+    "LengthUnit": {
+      "type": "string",
+      "enum": [
+        "bytes",
+        "scalars",
+        "graphemes"
+      ]
     },
     "Limit": {
       "oneOf": [
@@ -326,6 +345,36 @@
         "error",
         "warning"
       ]
+    },
+    "TextLength": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "min": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "unit": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LengthUnit"
+            }
+          ],
+          "default": "scalars"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }
