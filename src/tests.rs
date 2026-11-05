@@ -983,6 +983,49 @@ export = []
 }
 
 #[test]
+fn character_tokens_accept_literal_controls_without_rewriting_source_bytes() {
+    let rule = "id = 'character'\nmessage = 'Character.'\nquery = '(char) @finding'\n";
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        for value in [0_u8, 1, 9, 10, 27, 31] {
+            for escaped in [false, true] {
+                let token = format!("?{}{}", if escaped { "\\" } else { "" }, char::from(value));
+                let text = format!("prefix = \"é\"\nvalue = {token}\n");
+                let hits = lint(engine, "character.ex", &text).unwrap();
+                assert_eq!(hits.len(), 1, "{value}, {escaped}");
+                let hit = &hits[0];
+                assert_eq!((hit.line, hit.column), (2, 9));
+                assert_eq!(&text[hit.start_byte..hit.end_byte], token);
+                assert_eq!(hit.end_byte - hit.start_byte, token.len());
+            }
+        }
+        for text in ["value = ?\\", "value = ?\\\\"] {
+            assert_eq!(lint(engine, "character.ex", text).unwrap().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn actual_eof_and_nul_outside_character_tokens_still_fail_closed() {
+    let rule = "id = 'character'\nmessage = 'Character.'\nquery = '(char) @finding'\n";
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for engine in [&strict, &fast] {
+        for text in ["value = ?", "\0\n", "x\0y\n", "x * ?\0 +\n"] {
+            let error = lint(engine, "character.ex", text).expect_err("invalid source must fail");
+            assert!(
+                matches!(
+                    error.message.as_str(),
+                    "Elixir syntax error or missing token" | "Elixir parse was incomplete"
+                ),
+                "{error:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn canonical_unicode_comparisons_are_opt_in_and_match_in_both_loading_modes() {
     let text = concat!(
         "[\"ascii\", \"ascii\"]\n",

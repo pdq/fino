@@ -270,3 +270,6 @@ repository-level settings that enforce required checks.
 
 The vendored tree-sitter runtime retains its upstream license and includes a bounded
 parser-stack patch. See [the patch note](vendor/tree-sitter/PATCH.md).
+The vendored Elixir grammar retains its Apache-2.0 license and fixes literal
+NUL/LF character tokens without rewriting source bytes. See its
+[patch note and upstream provenance](vendor/tree-sitter-elixir/PATCH.md).

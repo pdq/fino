@@ -27,3 +27,4 @@ unicode-width = { version = "=0.2.3", default-features = false }
 
 [patch.crates-io]
 tree-sitter = { path = "vendor/tree-sitter" }
+tree-sitter-elixir = { path = "vendor/tree-sitter-elixir" }
