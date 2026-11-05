@@ -214,11 +214,19 @@
           "description": "Outer capture or stage export name, without `@`.",
           "type": "string"
         },
+        "left_prefix": {
+          "description": "Literal text prepended to the left capture before comparison.",
+          "type": "string"
+        },
         "operator": {
           "$ref": "#/definitions/BindingOperator"
         },
         "right": {
           "description": "Outer capture or stage export name, without `@`.",
+          "type": "string"
+        },
+        "right_prefix": {
+          "description": "Literal text prepended to the right capture before comparison.",
           "type": "string"
         }
       },

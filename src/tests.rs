@@ -1017,6 +1017,65 @@ fn canonical_unicode_comparisons_are_opt_in_and_match_in_both_loading_modes() {
 }
 
 #[test]
+fn literal_prefixes_compose_with_byte_and_normalized_comparisons() {
+    for (left_prefix, right_prefix, source, byte_equal, nfc_equal) in [
+        ("pre_", "", "[\"name\", \"pre_name\"]\n", true, true),
+        ("", "pre_", "[\"pre_name\", \"name\"]\n", true, true),
+        ("same_", "same_", "[\"a\", \"a\"]\n", true, true),
+        ("x_", "y_", "[\"name\", \"name\"]\n", false, false),
+        ("a", "", "[\"\u{301}\", \"á\"]\n", false, true),
+        ("", "a", "[\"á\", \"\u{301}\"]\n", false, true),
+        ("e\u{301}", "é", "[\"name\", \"name\"]\n", false, true),
+        ("P_", "p_", "[\"name\", \"name\"]\n", false, false),
+    ] {
+        for (operator, equal) in [
+            ("text-eq", byte_equal),
+            ("text-not-eq", !byte_equal),
+            ("nfc-eq", nfc_equal),
+            ("nfc-not-eq", !nfc_equal),
+        ] {
+            let rule = format!(
+                "id = 'prefix'\nmessage = 'Prefixed text.'\n\
+                 query = '(list . (string (quoted_content) @_left) . (string (quoted_content) @_right) .) @finding'\n\
+                 [[comparisons]]\nleft = '_left'\nright = '_right'\noperator = '{operator}'\n\
+                 left_prefix = {}\nright_prefix = {}\n",
+                serde_json::to_string(left_prefix).unwrap(),
+                serde_json::to_string(right_prefix).unwrap(),
+            );
+            let (root, strict) = project("", &[&rule]);
+            let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+            for engine in [&strict, &fast] {
+                assert_eq!(
+                    lines(engine, "prefix.ex", source),
+                    if equal { vec![1] } else { vec![] },
+                    "{operator}, {left_prefix:?}, {right_prefix:?}",
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn prefix_work_is_bounded_for_byte_and_normalized_comparisons() {
+    for operator in ["text-eq", "nfc-eq"] {
+        let rule = format!(
+            "id = 'prefix-budget'\nmessage = 'Bounded prefixes.'\n\
+             query = '(list . (_) @_left . (_) @_right .) @finding'\n\
+             [[comparisons]]\nleft = '_left'\nright = '_right'\noperator = '{operator}'\n\
+             left_prefix = '{}'\n",
+            "p".repeat(1_000_000),
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            let error =
+                lint(engine, "bounded.ex", "[x, x]\n").expect_err("prefix work must be bounded");
+            assert!(error.message.contains("predicate work limit exceeded"));
+        }
+    }
+}
+
+#[test]
 fn normalized_comparison_work_exhaustion_fails_the_file_in_both_modes() {
     let rule = "id = 'bounded'\nmessage = 'Bounded.'\n\
                 query = '(list . (_) @_left . (_) @_right .) @finding'\n\

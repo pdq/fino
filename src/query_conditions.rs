@@ -29,6 +29,8 @@ struct Stage {
 struct Comparison {
     left: usize,
     right: usize,
+    left_prefix: String,
+    right_prefix: String,
     operator: BindingOperator,
 }
 
@@ -155,6 +157,8 @@ pub(crate) fn compile(
             Ok(Comparison {
                 left: binding(&pipeline.bindings, &spec.left, "left")?,
                 right: binding(&pipeline.bindings, &spec.right, "right")?,
+                left_prefix: spec.left_prefix.clone(),
+                right_prefix: spec.right_prefix.clone(),
                 operator: spec.operator,
             })
         })();
@@ -579,21 +583,54 @@ impl<'tree> Evaluator<'tree> {
             };
             let left = &text[left.byte_range()];
             let right = &text[right.byte_range()];
+            let prefixed =
+                !comparison.left_prefix.is_empty() || !comparison.right_prefix.is_empty();
+            let normalized = matches!(
+                comparison.operator,
+                BindingOperator::NfcEq | BindingOperator::NfcNotEq
+            );
+            if prefixed || normalized {
+                for size in [
+                    left.len(),
+                    right.len(),
+                    comparison.left_prefix.len(),
+                    comparison.right_prefix.len(),
+                ] {
+                    self.work.predicate_work(size)?;
+                }
+            }
+            let bytes_equal = if prefixed {
+                comparison
+                    .left_prefix
+                    .as_bytes()
+                    .iter()
+                    .chain(left)
+                    .eq(comparison.right_prefix.as_bytes().iter().chain(right))
+            } else {
+                left == right
+            };
             let equal = match comparison.operator {
-                BindingOperator::TextEq | BindingOperator::TextNotEq => left == right,
+                BindingOperator::TextEq | BindingOperator::TextNotEq => bytes_equal,
                 BindingOperator::NfcEq | BindingOperator::NfcNotEq => {
-                    self.work.predicate_work(left.len())?;
-                    self.work.predicate_work(right.len())?;
-                    if left == right {
+                    if bytes_equal {
                         true
-                    } else if left.is_ascii() && right.is_ascii() {
+                    } else if left.is_ascii()
+                        && right.is_ascii()
+                        && comparison.left_prefix.is_ascii()
+                        && comparison.right_prefix.is_ascii()
+                    {
                         false
                     } else {
                         let left = std::str::from_utf8(left)
                             .map_err(|error| format!("normalized comparison: {error}"))?;
                         let right = std::str::from_utf8(right)
                             .map_err(|error| format!("normalized comparison: {error}"))?;
-                        left.nfc().eq(right.nfc())
+                        comparison
+                            .left_prefix
+                            .chars()
+                            .chain(left.chars())
+                            .nfc()
+                            .eq(comparison.right_prefix.chars().chain(right.chars()).nfc())
                     }
                 }
             };

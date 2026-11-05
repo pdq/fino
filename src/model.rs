@@ -328,6 +328,12 @@ pub struct BindingComparison {
     pub left: String,
     /// Outer capture or stage export name, without `@`.
     pub right: String,
+    /// Literal text prepended to the left capture before comparison.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub left_prefix: String,
+    /// Literal text prepended to the right capture before comparison.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub right_prefix: String,
     pub operator: BindingOperator,
 }
 

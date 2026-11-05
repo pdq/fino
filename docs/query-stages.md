@@ -76,6 +76,14 @@ does not fold case, apply compatibility normalization, decode literal escapes,
 or compare ASTs. Normalization charges both captures' byte lengths against the
 per-file predicate-work budget and fails closed on exhaustion.
 
+Optional `left_prefix` and `right_prefix` strings prepend literal text to the
+respective capture before comparison. This can relate names that use different
+surface prefixes without enumerating the possible names. Prefixes work with all
+four operators and participate in NFC normalization as part of the complete
+text, including composition across the prefix boundary. Prefixed comparisons
+charge both prefixes and captures to the predicate-work budget; they stream the
+comparison rather than allocating concatenated strings.
+
 Queries compile once. Wrapper resolution and scoped results are cached per file.
 Query overflow, work-budget exhaustion and ambiguous stages fail the file; they
 never establish a successful negative condition. Rules without these features
