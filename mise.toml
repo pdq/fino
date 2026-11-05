@@ -1,0 +1,65 @@
+#:schema https://mise.jdx.dev/schema/mise.json
+
+[tools]
+"github:crate-ci/committed" = "1.1.12"
+dprint = "0.64.3"
+betterleaks = "1.10.0"
+hk = "2.11.1"
+pitchfork = "2.33.1"
+rust = "1.99.1"
+jactionlint = "2.4.0"
+
+[hooks]
+postinstall = 'test "${CI:-}" = true || hk install --mise'
+
+[tasks.fmt]
+description = "Formats all supported files"
+run = ["cargo fmt --all", "dprint fmt"]
+
+[tasks.fmt-check]
+description = "Checks formatting and fails on differences"
+run = ["cargo fmt --all --check", "dprint check"]
+
+[tasks.build]
+description = "Build Fino"
+run = "cargo build --locked"
+
+[tasks."build:release"]
+description = "Build the optimized release binary"
+run = "cargo build --release --locked"
+
+[tasks.test]
+description = "Run unit and CLI integration tests"
+run = "cargo test --locked"
+
+[tasks.package]
+description = "Package a built release target for distribution"
+run = "bash scripts/package.sh"
+
+[tasks.clippy]
+description = "Check Rust code without warnings"
+run = "cargo clippy --locked --all-targets -- -D warnings"
+
+[tasks."lint:workflows"]
+description = "Lint GitHub Actions workflows with jactionlint"
+run = "jactionlint"
+
+[tasks."lint:commits"]
+description = "Require Conventional Commits throughout reachable Git history"
+run = "bash scripts/lint-commits.sh"
+
+[tasks."secrets:files"]
+description = "Scan working files without contacting credential providers"
+run = "betterleaks dir . --redact --no-banner --validation=false --ignore-gitleaks-allow"
+
+[tasks."secrets:history"]
+description = "Scan all branches and tags, not just the current checkout"
+run = "bash scripts/scan-history.sh"
+
+[tasks.check]
+description = "Run all local and CI quality gates"
+depends = ["fmt-check", "clippy", "test", "lint:workflows", "secrets:files"]
+
+[tasks.fix]
+description = "Apply formatting fixes; secrets require manual review"
+run = "hk fix --all"

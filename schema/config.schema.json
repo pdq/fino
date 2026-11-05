@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProjectConfig",
+  "description": "Project configuration, normally `.fino/config.toml`.",
+  "type": "object",
+  "properties": {
+    "compat": {
+      "description": "Compatibility switches for migrating from other linters.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/ProjectCompat"
+        }
+      ],
+      "default": {
+        "credo_directives": false
+      }
+    },
+    "exclude": {
+      "description": "Root-relative globs excluded from every rule. Directory globs also exclude their contents.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "include": {
+      "description": "Root-relative globs of files to lint. Default: all `.ex` and `.exs` files.",
+      "type": "array",
+      "default": [
+        "**/*.ex",
+        "**/*.exs"
+      ],
+      "items": {
+        "type": "string"
+      }
+    },
+    "rules_dir": {
+      "description": "Directory containing one rule per `<id>.toml` file, relative to this config file.",
+      "type": "string",
+      "default": "rules"
+    },
+    "snapshot_file": {
+      "description": "Committable violation snapshot, relative to this config file.",
+      "type": "string",
+      "default": "snapshot.jsonl"
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "ProjectCompat": {
+      "type": "object",
+      "properties": {
+        "credo_directives": {
+          "description": "Honor `# credo:disable-for-this-file`, `-for-next-line`, `-for-previous-line` and\n`-for-lines:N` comments for rules that declare `compat.credo`.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

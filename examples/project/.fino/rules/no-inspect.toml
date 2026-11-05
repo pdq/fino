@@ -1,0 +1,16 @@
+id = "no-inspect"
+message = "Remove the debug inspection."
+query = '''
+((dot left: (alias) @_module right: (identifier) @finding)
+ (#eq? @_module "IO") (#eq? @finding "inspect"))
+'''
+
+[[tests]]
+name = "reports inspection"
+code = "IO.inspect(value)\n"
+expect = [1]
+
+[[tests]]
+name = "allows normal output"
+code = "IO.puts(value)\n"
+expect = []

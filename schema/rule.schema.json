@@ -1,0 +1,331 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RuleFile",
+  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `regex` or `path_only`.",
+  "type": "object",
+  "properties": {
+    "compat": {
+      "description": "Names this rule has in other linters, for suppression-comment compatibility.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/RuleCompat"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "description": {
+      "description": "Optional longer explanation: why the rule exists and how to fix findings.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "exclude": {
+      "description": "Skip files matching these root-relative globs. Directory globs also exclude their contents.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "id": {
+      "description": "Unique id: lowercase letters, digits and dashes. Must equal the file name without `.toml`.",
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+    },
+    "if_file": {
+      "description": "Only lint files where this condition matches.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Condition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "include": {
+      "description": "Only lint files matching these root-relative globs (default: every configured file).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "limit": {
+      "description": "Limit findings per file. Applied before suppression comments.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Limit"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "mask": {
+      "description": "For `regex`: blank or remove syntax (strings, comments, ...) before matching.\nOne mask, or a list of masks applied in order (later masks win).",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Masks"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "message": {
+      "description": "Message reported for each finding.",
+      "type": "string"
+    },
+    "path_only": {
+      "description": "Report one finding at line 1 of every selected file. Use with `include`/`exclude`.",
+      "type": "boolean"
+    },
+    "prefilter": {
+      "description": "For `regex`: an optional fast regex (no look-around) checked on the raw, unmasked line\n(`scope = \"line\"`) or file before masking and `regex` run. Purely an optimization:\nit must match the raw text whenever `regex` matches the masked text.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "query": {
+      "description": "Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.\nRun `fino tree FILE` to see node kinds and field names.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "regex": {
+      "description": "Regular expression (Rust syntax plus look-around). Each match is one finding.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "scope": {
+      "description": "For `regex`: match the whole file (default) or each line separately.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Scope"
+        }
+      ],
+      "default": "file"
+    },
+    "severity": {
+      "description": "New `error` findings fail checks; `warning` findings are only reported.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Severity"
+        }
+      ],
+      "default": "error"
+    },
+    "skip_inside": {
+      "description": "Drop findings located inside nodes captured by this tree-sitter query\n(captures not starting with `_`), e.g. everything inside `quote do ... end`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "skip_lines": {
+      "description": "Drop findings on lines matching this condition.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Condition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tests": {
+      "description": "Examples run by `fino test`. Include at least one finding and one clean case.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/RuleTest"
+      }
+    },
+    "unless_file": {
+      "description": "Skip files where this condition matches.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Condition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "message"
+  ],
+  "definitions": {
+    "Condition": {
+      "description": "A condition matches when any given matcher matches. At least one is required.",
+      "type": "object",
+      "properties": {
+        "query": {
+          "description": "Tree-sitter query. For `skip_lines`, lines where a non-`_` capture starts match.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "regex": {
+          "description": "Regex. For `skip_lines` it runs on each (masked) line; otherwise on the raw file.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Limit": {
+      "oneOf": [
+        {
+          "description": "Keep only the first finding in each file.",
+          "type": "string",
+          "const": "first-per-file"
+        }
+      ]
+    },
+    "Mask": {
+      "description": "Replace syntax content before regex matching. Newlines are always kept, so line\nnumbers do not change. Delimiters (quotes, `~r/`, ...) are kept.",
+      "type": "object",
+      "properties": {
+        "fill_blank_lines": {
+          "description": "Also put `with` on empty lines inside masked content, so they no longer look blank.",
+          "type": "boolean"
+        },
+        "nodes": {
+          "description": "Syntax to mask.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/MaskNode"
+          }
+        },
+        "query": {
+          "description": "Tree-sitter query selecting more nodes to mask (captures not starting with `_`).\nQuoted nodes (strings, sigils, ...) mask their content; other nodes mask entirely.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "with": {
+          "description": "Replacement for each masked byte: one ASCII character, or \"\" to remove the content.",
+          "type": "string",
+          "default": " "
+        }
+      },
+      "additionalProperties": false
+    },
+    "MaskNode": {
+      "oneOf": [
+        {
+          "description": "Content of \"strings\" and \"\"\"heredocs\"\"\", including interpolations.",
+          "type": "string",
+          "const": "string"
+        },
+        {
+          "description": "Content of 'charlists' and '''charlist heredocs'''.",
+          "type": "string",
+          "const": "charlist"
+        },
+        {
+          "description": "Content of sigils such as ~r/.../ and ~s(...).",
+          "type": "string",
+          "const": "sigil"
+        },
+        {
+          "description": "Content of quoted atoms (:\"a b\") and quoted keyword keys (\"a b\": 1).",
+          "type": "string",
+          "const": "quoted-atom"
+        },
+        {
+          "description": "Entire comments, including the `#`.",
+          "type": "string",
+          "const": "comment"
+        }
+      ]
+    },
+    "Masks": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Mask"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Mask"
+          }
+        }
+      ]
+    },
+    "RuleCompat": {
+      "type": "object",
+      "properties": {
+        "credo": {
+          "description": "Fully qualified Credo check name, e.g. `Credo.Check.Warning.IoInspect`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "RuleTest": {
+      "description": "An example source file and the lines where the rule must report findings.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "Elixir source to lint.",
+          "type": "string"
+        },
+        "expect": {
+          "description": "One-based line of every expected finding, repeated for several findings on one line.\nUse `[]` for a clean example.",
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          }
+        },
+        "name": {
+          "description": "What the example demonstrates.",
+          "type": "string"
+        },
+        "path": {
+          "description": "Path the example pretends to have; matters for `include`/`exclude`.",
+          "type": "string",
+          "default": "lib/example.ex"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "code",
+        "expect"
+      ]
+    },
+    "Scope": {
+      "type": "string",
+      "enum": [
+        "file",
+        "line"
+      ]
+    },
+    "Severity": {
+      "type": "string",
+      "enum": [
+        "error",
+        "warning"
+      ]
+    }
+  }
+}

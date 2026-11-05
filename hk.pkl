@@ -1,0 +1,62 @@
+amends "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v2.11.1/hk@2.11.1#/Builtins.pkl"
+
+local linters = new Mapping<String, Step> {
+  ["format"] {
+    exclude = List("vendor/**", "target/**", "evidence/**", "dist/**")
+    check = "mise run fmt-check"
+    fix = "mise run fmt"
+  }
+  ["secrets"] {
+    check = "mise run secrets:files"
+  }
+  ["workflows"] {
+    glob = List(".github/workflows/*.yml", ".github/workflows/*.yaml")
+    check = "mise run lint:workflows"
+  }
+}
+
+hooks {
+  ["check"] {
+    steps = linters
+  }
+
+  ["fix"] {
+    fix = true
+    steps = linters
+  }
+
+  ["pre-commit"] {
+    steps {
+      ...linters
+      ["betterleaks"] {
+        check = new CommandSpec {
+          command = "betterleaks git --pre-commit --staged --redact --no-banner --validation=false --ignore-gitleaks-allow"
+          effect = "read"
+        }
+      }
+    }
+  }
+
+  ["commit-msg"] {
+    steps {
+      ["conventional-commits"] {
+        check = "committed --config committed.toml --no-merge-commit --no-wip --no-fixup --commit-file {{ commit_msg_file }}"
+      }
+    }
+  }
+
+  ["pre-push"] {
+    steps {
+      ["checks"] {
+        check = "mise run check"
+      }
+      ["history-secrets"] {
+        check = "mise run secrets:history"
+      }
+      ["conventional-history"] {
+        check = "mise run lint:commits"
+      }
+    }
+  }
+}

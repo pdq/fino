@@ -1,0 +1,7 @@
+/target/
+/evidence/
+*.jsonl.guard
+*.jsonl.*.tmp
+/dist/
+/.hk/
+/.dexter/
