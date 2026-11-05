@@ -200,7 +200,9 @@ Each `@finding` capture produces a finding. Queries support tree-sitter text
 predicates and `#count-eq?`, `#count-gt?`, `#count-lt?` for named children, excluding
 comments. Rule filenames must match their ids. Validate and test before enabling.
 Generated JSON Schemas in `schema/` provide editor validation and completion.
-See [scoped matching](docs/query-stages.md) for stage exports, conditions, and resource limits.
+See [scoped matching](docs/query-stages.md) for stage exports, conditions and
+resource limits, and [performance snapshots](docs/performance.md) for repeatable
+startup/evaluation measurements and regression budgets.
 
 ### Suppression
 
