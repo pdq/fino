@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use tree_sitter::{
     CaptureQuantifier, Node, Query, QueryCursor, QueryCursorOptions, QueryMatch, StreamingIterator,
 };
+use unicode_normalization::UnicodeNormalization;
 
 struct CompiledCondition {
     capture: usize,
@@ -576,10 +577,29 @@ impl<'tree> Evaluator<'tree> {
             ) else {
                 return Ok(Outcome::Reject);
             };
-            let equal = text[left.byte_range()] == text[right.byte_range()];
+            let left = &text[left.byte_range()];
+            let right = &text[right.byte_range()];
+            let equal = match comparison.operator {
+                BindingOperator::TextEq | BindingOperator::TextNotEq => left == right,
+                BindingOperator::NfcEq | BindingOperator::NfcNotEq => {
+                    self.work.predicate_work(left.len())?;
+                    self.work.predicate_work(right.len())?;
+                    if left == right {
+                        true
+                    } else if left.is_ascii() && right.is_ascii() {
+                        false
+                    } else {
+                        let left = std::str::from_utf8(left)
+                            .map_err(|error| format!("normalized comparison: {error}"))?;
+                        let right = std::str::from_utf8(right)
+                            .map_err(|error| format!("normalized comparison: {error}"))?;
+                        left.nfc().eq(right.nfc())
+                    }
+                }
+            };
             if !match comparison.operator {
-                BindingOperator::TextEq => equal,
-                BindingOperator::TextNotEq => !equal,
+                BindingOperator::TextEq | BindingOperator::NfcEq => equal,
+                BindingOperator::TextNotEq | BindingOperator::NfcNotEq => !equal,
             } {
                 return Ok(Outcome::Reject);
             }

@@ -233,7 +233,9 @@
       "type": "string",
       "enum": [
         "text-eq",
-        "text-not-eq"
+        "text-not-eq",
+        "nfc-eq",
+        "nfc-not-eq"
       ]
     },
     "Condition": {

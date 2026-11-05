@@ -983,6 +983,55 @@ export = []
 }
 
 #[test]
+fn canonical_unicode_comparisons_are_opt_in_and_match_in_both_loading_modes() {
+    let text = concat!(
+        "[\"ascii\", \"ascii\"]\n",
+        "[\"ascii\", \"ASCII\"]\n",
+        "[\"café\", \"cafe\u{301}\"]\n",
+        "[\"cafe\u{301}\", \"café\"]\n",
+        "[\"x\u{301}\u{327}\", \"x\u{327}\u{301}\"]\n",
+        "[\"가\", \"가\"]\n",
+        "[\"ﬃ\", \"ffi\"]\n",
+        "[\"café\", \"cafe\"]\n",
+        "[\"cafe\u{301}\", \"cafe\u{301}\"]\n",
+        "[\"é\", \"\\u00E9\"]\n",
+    );
+    for (operator, expected) in [
+        ("text-eq", vec![1, 9]),
+        ("text-not-eq", vec![2, 3, 4, 5, 6, 7, 8, 10]),
+        ("nfc-eq", vec![1, 3, 4, 5, 6, 9]),
+        ("nfc-not-eq", vec![2, 7, 8, 10]),
+    ] {
+        let rule = format!(
+            "id = 'canonical'\nmessage = 'Canonical text.'\n\
+             query = '(list . (_) @_left . (_) @_right .) @finding'\n\
+             [[comparisons]]\nleft = '_left'\nright = '_right'\noperator = '{operator}'\n"
+        );
+        let other = "id = 'other'\nmessage = 'Other.'\nquery = '(integer) @finding'\n";
+        let (root, strict) = project("", &[other, &rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert_eq!(lines(engine, "canonical.ex", text), expected, "{operator}");
+        }
+    }
+}
+
+#[test]
+fn normalized_comparison_work_exhaustion_fails_the_file_in_both_modes() {
+    let rule = "id = 'bounded'\nmessage = 'Bounded.'\n\
+                query = '(list . (_) @_left . (_) @_right .) @finding'\n\
+                [[comparisons]]\nleft = '_left'\nright = '_right'\noperator = 'nfc-eq'\n";
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    let item = "a".repeat(500_000);
+    let text = format!("[\"{item}\", \"{item}\"]\n");
+    for engine in [&strict, &fast] {
+        let error = lint(engine, "bounded.ex", &text).expect_err("normalization must be bounded");
+        assert!(error.message.contains("predicate work limit exceeded"));
+    }
+}
+
+#[test]
 fn stage_inputs_and_comparisons_reject_missing_or_repeated_outer_bindings() {
     for query in [
         "(list) @finding @_scope\n(tuple) @finding",
@@ -991,6 +1040,7 @@ fn stage_inputs_and_comparisons_reject_missing_or_repeated_outer_bindings() {
         for extension in [
             "[[stages]]\nfrom = '_scope'\nquery = '(_) @item'\nexport = ['item']",
             "[[comparisons]]\nleft = '_scope'\nright = '_scope'\noperator = 'text-eq'",
+            "[[comparisons]]\nleft = '_scope'\nright = '_scope'\noperator = 'nfc-eq'",
         ] {
             let rule = format!(
                 "id = 'cardinal'\nmessage = 'One binding.'\nquery = '''{query}'''\n{extension}\n"

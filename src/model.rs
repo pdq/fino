@@ -336,6 +336,9 @@ pub struct BindingComparison {
 pub enum BindingOperator {
     TextEq,
     TextNotEq,
+    // Compare captured source text after canonical Unicode composition (NFC).
+    NfcEq,
+    NfcNotEq,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, JsonSchema)]

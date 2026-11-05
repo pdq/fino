@@ -69,6 +69,13 @@ operator = "text-eq"
 literal values or ASTs with metadata removed. Ordinary query `#eq?` predicates
 continue to operate within their own query.
 
+Use `nfc-eq` or `nfc-not-eq` to compare captured text after Unicode canonical
+normalization (NFC), for example composed and decomposed spellings of an
+identifier. This is opt-in: ordinary `text-eq` stays byte-exact. NFC comparison
+does not fold case, apply compatibility normalization, decode literal escapes,
+or compare ASTs. Normalization charges both captures' byte lengths against the
+per-file predicate-work budget and fails closed on exhaustion.
+
 Queries compile once. Wrapper resolution and scoped results are cached per file.
 Query overflow, work-budget exhaustion and ambiguous stages fail the file; they
 never establish a successful negative condition. Rules without these features
