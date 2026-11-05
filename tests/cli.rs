@@ -107,7 +107,9 @@ fn usage_spec_describes_commands_and_options_without_loading_a_project() {
     let text = String::from_utf8(output.stdout).unwrap();
     let spec: clap_usage::usage::Spec = text.parse().unwrap();
     assert_eq!(spec.bin, "fino");
-    for command in ["check", "snapshot", "validate", "test", "tree", "schema"] {
+    for command in [
+        "check", "snapshot", "profile", "validate", "test", "tree", "schema",
+    ] {
         assert!(spec.cmd.subcommands.contains_key(command), "{text}");
     }
     for flag in [
@@ -122,6 +124,7 @@ fn usage_spec_describes_commands_and_options_without_loading_a_project() {
         "--color",
         "--context",
         "--group-by",
+        "--runs",
         "--help",
     ] {
         assert!(text.contains(flag), "{text}");
@@ -152,6 +155,8 @@ fn help_version_and_argument_errors_keep_exit_codes() {
         vec!["check", "--color", "bad"],
         vec!["check", "--context", "-1"],
         vec!["check", "--group-by", "file"],
+        vec!["profile", "--runs", "0"],
+        vec!["profile", "--runs", "bad"],
         vec!["check", "--root"],
         vec!["tree"],
         vec!["schema", "other"],
@@ -260,6 +265,16 @@ impl Project {
             command.env("NO_COLOR", "1");
         }
         command.output().unwrap()
+    }
+
+    fn profile(&self, args: &[&str]) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_fino"))
+            .args(["profile", "--root"])
+            .arg(&self.0)
+            .args(args)
+            .env_remove("NO_COLOR")
+            .output()
+            .unwrap()
     }
 }
 
@@ -449,4 +464,163 @@ fn human_warning_snapshot_and_validation_errors_remain_readable() {
             .unwrap()
             .contains(": error:")
     );
+}
+
+#[test]
+fn profile_ranks_all_rules_independently_without_snapshot_writes() {
+    let project = Project::new();
+    let source = "IO.inspect(:one)\nIO.inspect(:two)\n";
+    project.source(source);
+    fs::write(
+        project.0.join(".fino/rules/call-review.toml"),
+        "id = 'call-review'\nmessage = 'Review calls'\nquery = '(call) @finding'\n",
+    )
+    .unwrap();
+    fs::write(
+        project.0.join(".fino/rules/unused-path.toml"),
+        "id = 'unused-path'\nmessage = 'Review generated code'\npath_only = true\ninclude = ['generated/**']\n",
+    ).unwrap();
+    let output = project.profile(&[
+        "--json",
+        "--color",
+        "always",
+        "--group-by",
+        "rule",
+        "--context",
+        "8",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert!(output.stderr.is_empty());
+    assert!(!output.stdout.contains(&0x1b));
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(profile["schema_version"], 1);
+    assert_eq!(
+        profile["mode"],
+        "independent rule-query evaluation; query sharing disabled"
+    );
+    assert_eq!(profile["requested_runs"], 3);
+    assert_eq!(profile["completed_runs"], 3);
+    assert_eq!(profile["warmup_completed"], true);
+    assert_eq!(profile["threads"], 1);
+    assert_eq!(profile["files"], 1);
+    assert_eq!(profile["rule_count"], 3);
+    assert_eq!(profile["findings"], 4);
+    assert!(profile["errors"].as_array().unwrap().is_empty());
+    assert_eq!(profile["scan_wall_samples_ms"].as_array().unwrap().len(), 3);
+    assert_eq!(profile["parse_samples_ms"].as_array().unwrap().len(), 3);
+    assert!(profile["parse_median_ms"].as_f64().unwrap() > 0.0);
+    let rules = profile["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 3);
+    for adjacent in rules.windows(2) {
+        assert!(
+            adjacent[0]["median_ms"].as_f64().unwrap()
+                >= adjacent[1]["median_ms"].as_f64().unwrap()
+        );
+    }
+    for rule in rules {
+        assert_eq!(rule["samples_ms"].as_array().unwrap().len(), 3);
+    }
+    let skipped = rules
+        .iter()
+        .find(|rule| rule["rule"] == "unused-path")
+        .unwrap();
+    assert_eq!(skipped["median_ms"], 0.0);
+    assert_eq!(skipped["findings"], 0);
+    assert_eq!(skipped["timing_status"], "no_recorded_time");
+    let query = rules
+        .iter()
+        .find(|rule| rule["rule"] == "call-review")
+        .unwrap();
+    assert!(query["median_ms"].as_f64().unwrap() > 0.0);
+    assert_eq!(query["findings"], 2);
+    assert!(!project.0.join(".fino/snapshot.jsonl").exists());
+    assert!(!project.0.join(".fino/snapshot.jsonl.guard").exists());
+    assert_eq!(
+        fs::read_to_string(project.0.join("example.ex")).unwrap(),
+        source
+    );
+
+    // Profiling ignores even a malformed existing snapshot, and never repairs it.
+    fs::write(
+        project.0.join(".fino/snapshot.jsonl"),
+        "not snapshot JSON\n",
+    )
+    .unwrap();
+    let output = project.profile(&["--runs", "1", "--threads", "2"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains("query sharing disabled")
+            && text.contains("not CPU time or additive wall-time")
+    );
+    assert!(text.contains("3 rules, 4 findings") && text.contains("1 measured runs, 2 threads"));
+    assert!(text.contains("Median scan wall:") && text.contains("median cumulative parsing:"));
+    assert!(text.contains("unused-path (no recorded time"));
+    assert_eq!(project.policy(), b"not snapshot JSON\n");
+}
+
+#[test]
+fn profile_supports_manifest_files_and_config_and_fails_closed() {
+    let project = Project::new();
+    project.source("IO.inspect(:value)\n");
+    fs::write(project.0.join("other.ex"), ":ok\n").unwrap();
+    let manifest = project.0.join("files.txt");
+    fs::write(&manifest, "other.ex\n").unwrap();
+    let config = project.0.join("custom.toml");
+    fs::write(&config, "rules_dir = '.fino/rules'\n").unwrap();
+    let output = project.profile(&[
+        "--json",
+        "--runs",
+        "2",
+        "--files-from",
+        manifest.to_str().unwrap(),
+        "--config",
+        config.to_str().unwrap(),
+        "example.ex",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(profile["files"], 2);
+    assert_eq!(profile["completed_runs"], 2);
+    assert_eq!(profile["findings"], 1);
+    for args in [
+        vec!["--json", "--runs", "1", "missing.ex"],
+        vec![
+            "--json",
+            "--runs",
+            "1",
+            "--files-from",
+            "missing-manifest.txt",
+        ],
+        vec!["--json", "--runs", "1", "--config", "missing-config.toml"],
+        vec!["--json", "--runs", "1", "--threads", "0"],
+        vec!["--json", "--runs", "1", "--update"],
+    ] {
+        let output = project.profile(&args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(!profile["errors"].as_array().unwrap().is_empty());
+        assert_eq!(profile["completed_runs"], 0);
+    }
+    project.source("defmodule Broken do\n");
+    let output = project.profile(&["--json", "--runs", "1"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!profile["errors"].as_array().unwrap().is_empty());
+    assert_eq!(profile["warmup_completed"], false);
+    fs::write(
+        project.0.join(".fino/rules/no-inspect.toml"),
+        "invalid rule",
+    )
+    .unwrap();
+    let output = project.profile(&["--json"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!profile["errors"].as_array().unwrap().is_empty());
+    assert!(!project.0.join(".fino/snapshot.jsonl").exists());
+    fs::write(project.0.join(".fino/config.toml"), "not config").unwrap();
+    let output = project.profile(&["--json"]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let profile: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(!profile["errors"].as_array().unwrap().is_empty());
 }

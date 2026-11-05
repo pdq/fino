@@ -1,5 +1,6 @@
 mod cli;
 mod output;
+mod profile;
 
 use cli::Args;
 use fino::model::{ProjectConfig, RuleFile};
@@ -27,6 +28,7 @@ fn run() -> Result<i32> {
         .unwrap_or_else(|| args.root.join(".fino/config.toml"));
     match args.command.as_str() {
         "check" | "snapshot" => lint(&args, &config),
+        "profile" => profile::run(&args, &config),
         "validate" => validate(&args, &config),
         "test" => test(&args, &config),
         "tree" => tree(&args),

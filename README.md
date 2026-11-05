@@ -59,6 +59,7 @@ Try the complete example in `examples/project/`.
 
 ```sh
 fino check [FILES...] [--files-from FILE] [--json] [--timings]
+fino profile [FILES...] [--files-from FILE] [--runs N] [--threads N] [--json]
 fino snapshot [FILES...]          # explicitly adopt current violations
 fino snapshot --update [FILES...] # remove stale entries; never adopt new violations
 fino validate [RULE_FILES...]
@@ -72,6 +73,49 @@ Exit codes: **0** pass, **1** new violations or failed examples, **2** invalid p
 unreadable selected files, or parse errors. `check` never writes files. Explicit
 file lists skip unsupported and excluded files, making them suitable for hooks.
 Paths must be relative to `--root` (default `.`).
+
+### Rule cost profiling
+
+`fino profile` ranks every loaded rule by median elapsed milliseconds, expensive
+first. It performs one warmup followed by `--runs N` measured scans (default **3**;
+must be positive). The default is **one worker thread** for easier comparison;
+`--threads N`, `--root`, `--config`, file arguments, and `--files-from` work as usual.
+
+```sh
+fino profile --runs 5
+fino profile lib/example.ex --threads 2 --json
+```
+
+This is **independent rule-query evaluation; query sharing disabled**. Each scan
+parses each selected file once, then evaluates the loaded rules against that tree.
+Rules are not profiled by rescanning the repository separately for each rule.
+Compilation and warmup are excluded from measured samples. The table includes
+each rule's median cumulative elapsed time and findings from the last completed
+scan, plus separate overall scan wall time and cumulative parsing medians.
+Files, loaded rules, and total findings also describe the last completed scan.
+
+Timings are elapsed durations, **not CPU time or additive wall-time attribution**.
+Workers overlap when multithreading is enabled. Medians need not add up. Removing
+a rule from normal linting does not necessarily save its independent profile cost:
+`check --timings` uses shared query traversals and reports that traversal separately,
+while `profile` disables query sharing to give query rules useful individual costs.
+Per-rule timers cover rule matching/masking, not file-level eligibility checks,
+file reading, suppression processing, or all reporting overhead. Zero means no
+recorded matching time (for example, excluded or disabled), not proof of zero work.
+The current engine exposes durations, not evaluated-file counts. Files are reread
+on every scan; keep the working tree stable while measuring.
+
+Profiling never loads, adopts, prunes, or writes snapshots. Findings do not fail
+this diagnostic: exit **0** means profiling completed, even with lint violations.
+Invalid policy, selected-file read errors, parse errors, and other scan errors
+stop profiling and exit **2**; partial samples must not be treated as a complete run.
+
+`profile --json` emits one diagnostic object with `schema_version = 1`, mode and
+attribution notes, requested/completed runs, warmup status, threads, counts, raw
+scan/parsing samples and medians, ranked `rules` (id, samples, median, findings,
+and timing status), `errors`, and `warnings`. Operational failures use this same
+object; argument-parse errors use stderr as usual. Presentation options are ignored:
+no color, snippets, or grouped headers. Ordinary `check --json` is unchanged.
 
 ### Human diagnostics
 

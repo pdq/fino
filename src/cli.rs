@@ -16,6 +16,7 @@ pub struct Args {
     pub group_by: String,
     pub timings: bool,
     pub update: bool,
+    pub runs: usize,
     pub positional: Vec<String>,
 }
 
@@ -116,6 +117,10 @@ pub fn definition() -> Command {
         .after_help("Exit codes: 0 ok, 1 new violations or failing tests, 2 invalid config/rules, read or parse errors.")
         .arg(Arg::new("usage-spec").long("usage-spec").action(ArgAction::SetTrue).help("Print the Usage spec for shell completion and documentation"))
         .subcommand(command("check", "Lint the project; never writes", "FILES"))
+        .subcommand(command("profile", "Rank independent rule costs; one warmup, no snapshot writes; findings do not fail", "FILES")
+            .mut_arg("threads", |arg| arg.help("Worker threads (profile default: 1)").default_value("1"))
+            .arg(value("runs", "N", "Measured scans after one warmup (positive integer)")
+                .value_parser(clap::value_parser!(u32).range(1..)).default_value("3")))
         .subcommand(command("snapshot", "Explicitly adopt current violations, or prune with --update", "FILES"))
         .subcommand(command("validate", "Validate config and all (or selected) rule files", "RULE_FILES"))
         .subcommand(command("test", "Run examples in all (or selected) rule files", "RULE_FILES"))
@@ -161,6 +166,11 @@ pub fn parse() -> Result<Option<Args>> {
         group_by: matches.get_one::<String>("group-by").unwrap().clone(),
         timings: matches.get_flag("timings"),
         update: matches.get_flag("update"),
+        runs: if command == "profile" {
+            *matches.get_one::<u32>("runs").unwrap() as usize
+        } else {
+            3
+        },
         positional: matches
             .get_many::<String>("files")
             .into_iter()
