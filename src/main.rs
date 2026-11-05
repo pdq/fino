@@ -1,106 +1,24 @@
+mod cli;
+mod output;
+
+use cli::Args;
 use fino::model::{ProjectConfig, RuleFile};
-use fino::{Engine, Problems, Report, Result, Snapshot};
+use fino::{Engine, Problems, Result, Snapshot};
 use std::path::{Path, PathBuf};
-use std::{env, fs, io::Read, process};
-
-const HELP: &str = "fino — declarative, parallel Elixir linting
-
-Usage: fino <command> [options] [files...]
-
-Commands:
-  check              Lint the project; never writes
-  snapshot           Explicitly adopt current violations (optionally given files)
-  snapshot --update  Remove stale entries only; never adopt new violations
-  validate [FILES]   Validate the config and all (or the given) rule files
-  test [FILES]       Run the [[tests]] examples of all (or the given) rule files
-  tree FILE|-        Print the syntax tree (node kinds, fields, positions)
-  schema rule|config Print the JSON Schema for rule or config files
-
-Options:
-  --root PATH        Project root (default: .)
-  --config FILE      Config file (default: ROOT/.fino/config.toml)
-  --threads N        Worker threads (default: available CPUs)
-  --files-from FILE  Relative paths, one per line (check or snapshot)
-  --code SOURCE      tree only: parse SOURCE instead of a file
-  --json             Machine-readable output
-  --timings          check only: print cumulative time per rule to stderr
-
-Exit codes: 0 ok, 1 new violations or failing tests, 2 invalid config/rules,
-read or parse errors.
-";
-
-struct Args {
-    command: String,
-    root: PathBuf,
-    config: Option<PathBuf>,
-    threads: usize,
-    manifest: Option<PathBuf>,
-    code: Option<String>,
-    json: bool,
-    timings: bool,
-    update: bool,
-    positional: Vec<String>,
-}
+use std::{fs, io::Read, process};
 
 fn main() {
     match run() {
         Ok(code) => process::exit(code),
         Err(message) => {
-            eprintln!("fino: {message}");
+            eprintln!("fino: {}", output::safe(&message));
             process::exit(2);
         }
     }
 }
 
-fn parse_args() -> Result<Option<Args>> {
-    let mut raw = env::args().skip(1);
-    let Some(command) = raw.next() else {
-        print!("{HELP}");
-        return Ok(None);
-    };
-    match command.as_str() {
-        "--version" | "-V" => {
-            println!("fino {}", env!("CARGO_PKG_VERSION"));
-            return Ok(None);
-        }
-        "--help" | "-h" | "help" => {
-            print!("{HELP}");
-            return Ok(None);
-        }
-        _ => {}
-    }
-    let mut args = Args {
-        command,
-        root: PathBuf::from("."),
-        config: None,
-        threads: std::thread::available_parallelism().map_or(1, usize::from),
-        manifest: None,
-        code: None,
-        json: false,
-        timings: false,
-        update: false,
-        positional: Vec::new(),
-    };
-    while let Some(flag) = raw.next() {
-        let mut value = || raw.next().ok_or_else(|| format!("{flag} needs a value"));
-        match flag.as_str() {
-            "--json" => args.json = true,
-            "--timings" => args.timings = true,
-            "--update" => args.update = true,
-            "--root" => args.root = PathBuf::from(value()?),
-            "--config" => args.config = Some(PathBuf::from(value()?)),
-            "--files-from" => args.manifest = Some(PathBuf::from(value()?)),
-            "--code" => args.code = Some(value()?),
-            "--threads" => args.threads = value()?.parse().map_err(|_| "invalid thread count")?,
-            other if other.starts_with("--") => return Err(format!("unknown option {other:?}")),
-            _ => args.positional.push(flag),
-        }
-    }
-    Ok(Some(args))
-}
-
 fn run() -> Result<i32> {
-    let Some(args) = parse_args()? else {
+    let Some(args) = cli::parse()? else {
         return Ok(0);
     };
     let config = args
@@ -128,10 +46,10 @@ fn report_problems(problems: &[Problems], json: bool) -> bool {
     } else {
         for p in problems {
             for e in &p.errors {
-                eprintln!("{}: error: {e}", p.file);
+                eprintln!("{}: error: {}", output::safe(&p.file), output::safe(e));
             }
             for w in &p.warnings {
-                eprintln!("{}: warning: {w}", p.file);
+                eprintln!("{}: warning: {}", output::safe(&p.file), output::safe(w));
             }
         }
     }
@@ -184,10 +102,18 @@ fn test(args: &Args, config: &Path) -> Result<i32> {
     } else {
         for o in outcomes.iter().filter(|o| !o.passed) {
             match &o.error {
-                Some(e) => println!("FAIL {} — {}: {e}", o.rule, o.name),
+                Some(e) => println!(
+                    "FAIL {} — {}: {}",
+                    output::safe(&o.rule),
+                    output::safe(&o.name),
+                    output::safe(e)
+                ),
                 None => println!(
                     "FAIL {} — {}: expected lines {:?}, got {:?}",
-                    o.rule, o.name, o.expected, o.actual
+                    output::safe(&o.rule),
+                    output::safe(&o.name),
+                    o.expected,
+                    o.actual
                 ),
             }
         }
@@ -248,25 +174,7 @@ fn lint(args: &Args, config: &Path) -> Result<i32> {
         return Err("no rules found".into());
     }
     let snapshot = Snapshot::load(&engine.snapshot_path)?;
-    let mut files = args
-        .manifest
-        .as_ref()
-        .map(|path| {
-            fs::read_to_string(path)
-                .map(|text| {
-                    text.lines()
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .map_err(|e| format!("cannot read file manifest: {e}"))
-        })
-        .transpose()?;
-    if !args.positional.is_empty() {
-        files
-            .get_or_insert_with(Vec::new)
-            .extend(args.positional.iter().cloned());
-    }
+    let files = selected_files(args)?;
     let mut report = engine.scan(&args.root, files.as_deref(), args.threads, &snapshot)?;
     if report.errors.is_empty() && args.command == "snapshot" {
         snapshot.write_update(
@@ -287,48 +195,40 @@ fn lint(args: &Args, config: &Path) -> Result<i32> {
             serde_json::to_string(&report).map_err(|e| e.to_string())?
         );
     } else {
-        human(&report);
+        output::human(&report, &engine, args);
     }
     if args.timings {
         eprintln!("cumulative time across threads:");
         for (name, time) in engine.timings() {
-            eprintln!("  {:>10.1} ms  {name}", time.as_secs_f64() * 1000.0);
+            eprintln!(
+                "  {:>10.1} ms  {}",
+                time.as_secs_f64() * 1000.0,
+                output::safe(&name)
+            );
         }
     }
     Ok(report.exit_code())
 }
 
-fn human(report: &Report) {
-    for row in &report.findings {
-        let tag = if row.severity == fino::Severity::Warning {
-            " (warning)"
-        } else {
-            ""
-        };
-        println!(
-            "{}:{}:{}: {}{tag}: {}",
-            row.file, row.line, row.column, row.rule, row.message
-        );
+fn selected_files(args: &Args) -> Result<Option<Vec<String>>> {
+    let mut files = args
+        .manifest
+        .as_ref()
+        .map(|path| {
+            fs::read_to_string(path)
+                .map(|text| {
+                    text.lines()
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .map_err(|e| format!("cannot read file manifest: {e}"))
+        })
+        .transpose()?;
+    if !args.positional.is_empty() {
+        files
+            .get_or_insert_with(Vec::new)
+            .extend(args.positional.iter().cloned());
     }
-    for error in &report.errors {
-        eprintln!(
-            "{}:{}:{}: error: {}",
-            error.file, error.line, error.column, error.message
-        );
-    }
-    for entry in &report.stale {
-        eprintln!(
-            "{}: {}: stale snapshot entry (run fino snapshot --update)",
-            entry.file, entry.rule
-        );
-    }
-    println!(
-        "{}: {} files, {} findings, {} errors, {:.2} ms ({})",
-        if report.passed { "PASS" } else { "FAIL" },
-        report.files,
-        report.findings.len(),
-        report.errors.len(),
-        report.elapsed_ms,
-        report.scope
-    );
+    Ok(files)
 }

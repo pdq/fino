@@ -73,6 +73,66 @@ unreadable selected files, or parse errors. `check` never writes files. Explicit
 file lists skip unsupported and excluded files, making them suitable for hooks.
 Paths must be relative to `--root` (default `.`).
 
+### Human diagnostics
+
+`check` and `snapshot` show clickable `file:line:column` locations, severity,
+rule ids, and source snippets. Choose the presentation without changing lint results:
+
+```sh
+fino check --color auto --context 2       # defaults; color only on a terminal
+fino check --group-by rule               # rule headers with descriptions
+fino check --group-by none --context 0   # default ordering, compact findings
+fino check --color always                # force ANSI color, including in pipes
+fino check --color never                 # plain text
+```
+
+The result summary includes the number of loaded rules (`N rules`), including
+rules whose path filters skip some or all selected files. It is not a count of
+rule-file evaluations. JSON reports keep their existing shape.
+
+`--color auto` respects `NO_COLOR` (when present, even if empty) and checks stdout
+and stderr separately. `always` overrides `NO_COLOR`. Grouping is opt-in, sorts
+rule ids, and shows each description once, falling back to the rule message.
+`--context N` adds N surrounding lines on each side of a match; `0` hides snippets.
+Multiline matches mark each matched line. Source is cached per render; an unreadable
+or changed source file can omit its snippet without changing the result or exit code.
+
+Coordinates remain the engine's one-based byte columns. Snippets expand tabs to
+four-column stops measured from the start of the source, excluding the line-number
+gutter. Printable Unicode stays literal. Carets use conventional non-CJK terminal
+cell widths for whole strings, including combining marks and emoji sequences;
+ambiguous-width characters are narrow. Font or terminal-specific rendering can differ.
+Controls, bidi direction markers, and hidden formatting controls are escaped rather
+than executed; normal script joiners and emoji joiners remain literal. `--json`
+ignores all three presentation options: no colors, snippets, headers, or changes
+to its report shape.
+
+### Shell completion
+
+Fino uses [Usage](https://usage.jdx.dev/) for shell completion. Install the Usage
+CLI with `mise use -g usage` (or `brew install usage`), and put both `fino` and
+`usage` on `PATH`. Run the command for your shell:
+
+```sh
+usage generate completion zsh fino --usage-cmd 'fino --usage-spec' --install
+usage generate completion bash fino --usage-cmd 'fino --usage-spec' --install
+usage generate completion fish fino --usage-cmd 'fino --usage-spec' --install
+```
+
+Follow the setup instructions printed by Usage, then open a new shell. `--install`
+writes the completion file; it does not change your shell startup files. Bash
+also needs bash-completion 2.11 or later installed and sourced. Keep `usage` on
+`PATH`: the generated completion calls it at runtime.
+
+`fino --usage-spec` prints the KDL spec generated from the same command definition
+that parses arguments and renders help. Completion reads it from the installed
+binary, so there is no separate spec to keep in sync. Use `fino COMMAND --help`
+for command options. To save the spec for other Usage tools:
+
+```sh
+fino --usage-spec > fino.usage.kdl
+```
+
 ### Rule fields
 
 Choose exactly one matcher: `query`, `regex`, or `path_only = true`.
