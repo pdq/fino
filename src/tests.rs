@@ -758,6 +758,215 @@ query = '((identifier) @local (#not-eq? @local "blocked"))'
 expect = "exists"
 "#;
 
+const BRANCHED: &str = r#"
+id = "branched"
+message = "One logical rule."
+[compat]
+credo = "Credo.Check.Warning.Example"
+
+[[branches]]
+query = '''((call target: (identifier) @_name (arguments (_) @_value))
+    (#eq? @_name "box"))'''
+[[branches.stages]]
+from = "_value"
+unwrap_singleton = ["block"]
+query = '(integer) @finding'
+export = ["finding"]
+
+[[branches]]
+query = '''((call target: (identifier) @finding (arguments (_) @_value))
+    (#eq? @finding "box"))'''
+[[branches.conditions]]
+capture = "_value"
+relation = "root"
+query = '(string)'
+expect = "exists"
+
+[[branches]]
+query = '''
+; Multiple patterns and leading comments must still map to this branch.
+((integer) @finding (#eq? @finding "7"))
+((float) @finding (#eq? @finding "7.0"))
+'''
+"#;
+
+#[test]
+fn alternative_pipelines_are_isolated_and_deduplicate_only_identical_ranges() {
+    let (root, strict) = project("", &[BRANCHED, DEBUG]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let text = "box(7)\nbox(\"yes\")\nother(8)\n7\nbox(7); box(7)\n7.0\nbox(:no)\n";
+    let expected = lint(&strict, "lib/a.ex", text).unwrap();
+    assert_eq!(
+        expected
+            .iter()
+            .map(|f| (f.line, &text[f.start_byte..f.end_byte]))
+            .collect::<Vec<_>>(),
+        [
+            (1, "7"),
+            (2, "box"),
+            (4, "7"),
+            (5, "7"),
+            (5, "7"),
+            (6, "7.0")
+        ]
+    );
+    assert_eq!(lint(&fast, "lib/a.ex", text).unwrap(), expected);
+    fs::write(root.join("a.ex"), text).unwrap();
+    for engine in [&strict, &fast] {
+        for threads in [1, 2] {
+            let report = engine
+                .scan(&root, None, threads, &Snapshot::default())
+                .unwrap();
+            assert!(report.errors.is_empty());
+            assert_eq!(report.findings.len(), 6);
+        }
+    }
+}
+
+#[test]
+fn branch_rules_share_filters_limits_and_suppression_identity() {
+    let limited = BRANCHED.replace(
+        "[compat]",
+        "limit = 'first-per-file'\ninclude = ['lib/**']\n[compat]",
+    );
+    let config = "[compat]\ncredo_directives = true\n";
+    for rule in [BRANCHED.to_string(), limited] {
+        let (root, strict) = project(config, &[&rule]);
+        let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        for engine in [&strict, &fast] {
+            assert!(
+                lint(
+                    engine,
+                    "lib/a.ex",
+                    "# fino:disable-file branched\nbox(7)\nbox(\"yes\")\n"
+                )
+                .unwrap()
+                .is_empty()
+            );
+            assert!(lint(engine, "lib/a.ex", "# credo:disable-for-this-file Credo.Check.Warning.Example\nbox(7)\nbox(\"yes\")\n").unwrap().is_empty());
+            assert!(
+                lint(
+                    engine,
+                    "lib/a.ex",
+                    "# fino:disable-next-line branched\nbox(7)\n"
+                )
+                .unwrap()
+                .is_empty()
+            );
+            assert_eq!(
+                lines(engine, "lib/a.ex", "box(7)\nbox(\"yes\")\n"),
+                if rule.contains("first-per-file") {
+                    vec![1]
+                } else {
+                    vec![1, 2]
+                }
+            );
+            if rule.contains("first-per-file") {
+                assert!(lint(engine, "other/a.ex", "box(7)\n").unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn branch_validation_rejects_mixed_matchers_and_cross_branch_bindings() {
+    for (body, expected) in [
+        (
+            "query = '(integer) @finding'\n[[branches]]\nquery = '(float) @finding'",
+            "exactly one",
+        ),
+        (
+            "regex = 'x'\n[[branches]]\nquery = '(integer) @finding'",
+            "exactly one",
+        ),
+        ("branches = []", "exactly one"),
+        (
+            "[[conditions]]\ncapture = 'finding'\nquery = '(integer)'\nexpect = 'exists'\n[[branches]]\nquery = '(integer) @finding'",
+            "inside each branch",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding'\n[[branches]]\nquery = '(not_a_node) @finding'",
+            "branches[1]: invalid query",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding ('\n[[branches]]\nquery = '(float) @finding) (atom) @finding'",
+            "invalid query",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding @_private'\n[[branches]]\nquery = '((float) @finding (#eq? @_private \"7\"))'",
+            "branches[1]: invalid query",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding'\n[[branches]]\nquery = '(float) @_leaked'",
+            "branches[1]: query needs",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding'\n[[branches.conditions]]\ncapture = '_leaked'\nquery = '(integer)'\nexpect = 'exists'\n[[branches]]\nquery = '(float) @finding @_leaked'",
+            "branches[0]: conditions[0].capture",
+        ),
+        (
+            "[[branches]]\nquery = '(integer) @finding'\nmessage = 'ignored'",
+            "unknown field",
+        ),
+    ] {
+        let root = fixture();
+        let dir = root.join(".fino/rules");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(root.join(".fino/config.toml"), "").unwrap();
+        fs::write(
+            dir.join("bad.toml"),
+            format!("id = 'bad'\nmessage = 'Bad.'\n{body}\n"),
+        )
+        .unwrap();
+        for load in [
+            Engine::load(&root.join(".fino/config.toml"), None),
+            Engine::load_fast(&root.join(".fino/config.toml")),
+        ] {
+            let (engine, problems) = load.unwrap();
+            assert!(
+                engine.groups.is_empty(),
+                "invalid branches must not execute: {body}"
+            );
+            assert!(
+                problems
+                    .iter()
+                    .flat_map(|p| &p.errors)
+                    .any(|e| e.contains(expected)),
+                "{body}: {problems:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn branch_work_errors_fail_the_whole_file_even_after_another_branch_matches() {
+    let rule = r#"
+id = 'bounded-branches'
+message = 'Bounded.'
+[[branches]]
+query = '(integer) @finding'
+[[branches]]
+query = '(list . (_) @_left . (_) @_right .) @finding'
+[[branches.comparisons]]
+left = '_left'
+right = '_right'
+operator = 'text-eq'
+left_prefix = 'x'
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    let text = format!(
+        "1\n[\"{}\", \"{}\"]\n",
+        "a".repeat(500_000),
+        "a".repeat(500_000)
+    );
+    for engine in [&strict, &fast] {
+        let error = lint(engine, "a.ex", &text).expect_err("partial findings are not success");
+        assert!(error.message.contains("predicate work limit exceeded"));
+    }
+}
+
 #[test]
 fn stages_can_create_findings_at_root_or_descendant_token_spans() {
     // Query groups order longer queries first. Force capture-index renumbering.

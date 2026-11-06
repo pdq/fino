@@ -209,6 +209,7 @@ Choose exactly one matcher: `query`, `regex`, or `path_only = true`.
 | `stages`                     | Root-rebased queries with explicit wrapper unwrapping             |
 | `conditions`                 | Queries scoped to a captured node                                 |
 | `comparisons`                | Source-text equality between exported bindings                    |
+| `branches`                   | Alternative query pipelines under one rule id                     |
 | `limit = "first-per-file"`   | Report only the first match                                       |
 | `severity = "warning"`       | Report without failing checks                                     |
 
@@ -216,7 +217,7 @@ Each `@finding` capture produces a finding. Queries support tree-sitter text
 predicates and `#count-eq?`, `#count-gt?`, `#count-lt?` for named children, excluding
 comments. Rule filenames must match their ids. Validate and test before enabling.
 Generated JSON Schemas in `schema/` provide editor validation and completion.
-See [scoped matching](docs/query-stages.md) for stage exports, conditions and
+See [scoped matching](docs/query-stages.md) for alternative pipelines, stage exports, conditions and
 resource limits, and [performance snapshots](docs/performance.md) for repeatable
 startup/evaluation measurements and regression budgets.
 

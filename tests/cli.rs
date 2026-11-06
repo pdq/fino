@@ -63,6 +63,50 @@ impl Project {
 }
 
 #[test]
+fn branches_are_one_rule_in_validation_tests_checks_profiles_and_snapshots() {
+    let project = Project::new();
+    fs::write(
+        project.0.join(".fino/rules/no-inspect.toml"),
+        r#"
+id = 'no-inspect'
+message = 'Remove debug.'
+[[branches]]
+query = '((identifier) @finding (#eq? @finding "debug"))'
+[[branches]]
+query = '((identifier) @finding (#eq? @finding "debug"))'
+[[branches]]
+query = '((atom) @finding (#eq? @finding ":debug"))'
+[[tests]]
+name = 'overlapping branches count once'
+code = 'debug; :debug'
+expect = [1, 1]
+[[tests]]
+name = 'clean'
+code = ':ok'
+expect = []
+"#,
+    )
+    .unwrap();
+    project.source("debug; :debug\n");
+    project.run("validate", &[], 0);
+    project.run("test", &[], 0);
+    let check = project.run("check", &[], 1);
+    assert_eq!(check["findings"].as_array().unwrap().len(), 2);
+    assert!(
+        check["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f["rule"] == "no-inspect")
+    );
+    let profile = project.run("profile", &["--runs", "1"], 0);
+    assert_eq!(profile["rule_count"], 1);
+    assert_eq!(profile["rules"][0]["findings"], 2);
+    project.run("snapshot", &[], 0);
+    project.run("check", &[], 0);
+}
+
+#[test]
 fn snapshot_cli_adopts_explicitly_and_updates_without_accepting_new_debt() {
     let project = Project::new();
     let original_source = "IO.inspect(:old)\n";

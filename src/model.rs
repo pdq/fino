@@ -71,7 +71,7 @@ fn default_snapshot_file() -> String {
 
 /// One lint rule. Store each rule in `<rules_dir>/<id>.toml`.
 ///
-/// Exactly one matcher is required: `query`, `regex` or `path_only`.
+/// Exactly one matcher is required: `query`, `branches`, `regex` or `path_only`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
@@ -94,10 +94,15 @@ pub struct RuleFile {
     pub exclude: Vec<String>,
 
     /// Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.
-    /// When absent here, an ordered stage must export `finding` instead.
+    /// Without an outer `@finding`, an ordered stage must export `finding` instead.
     /// Run `fino tree FILE` to see node kinds and field names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// Alternative query pipelines for one logical rule. Findings at the same
+    /// source range are reported once, even when several branches match.
+    /// Cannot be combined with top-level query, stages, conditions or comparisons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub branches: Vec<QueryBranch>,
     /// Regular expression (Rust syntax plus look-around). Each match is one finding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub regex: Option<String>,
@@ -251,6 +256,19 @@ pub struct Condition {
     /// Tree-sitter query. For `skip_lines`, lines where a non-`_` capture starts match.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+}
+
+/// One alternative query pipeline. Bindings are local to this branch.
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct QueryBranch {
+    pub query: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stages: Vec<QueryStage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conditions: Vec<QueryCondition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub comparisons: Vec<BindingComparison>,
 }
 
 /// A query evaluated inside exactly one captured node, without exporting captures.

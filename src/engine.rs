@@ -51,14 +51,29 @@ pub struct Rule {
     pub(crate) skip_inside: Option<Query>,
     pub(crate) if_file: Option<Cond>,
     pub(crate) unless_file: Option<Cond>,
-    pub(crate) pipeline: crate::query_conditions::Pipeline,
+    pub(crate) branches: Vec<Branch>,
     pub(crate) limit: Option<Limit>,
+}
+
+pub(crate) struct Branch {
+    /// Start byte of this branch's outer query in the rule's combined query text.
+    pub start: usize,
+    pub pipeline: crate::query_conditions::Pipeline,
+}
+
+impl Rule {
+    pub(crate) fn branch_at(&self, offset: usize) -> usize {
+        self.branches
+            .partition_point(|branch| branch.start <= offset)
+            - 1
+    }
 }
 
 /// Several query rules compiled as one query, so each file is traversed once per group.
 pub(crate) struct Group {
     pub query: Query,
     pub pattern_rule: Vec<usize>,
+    pub pattern_branch: Vec<usize>,
     pub capture: Option<u32>,
 }
 
@@ -227,12 +242,24 @@ fn compile_spec(
     if spec.message.trim().is_empty() {
         errors.push("message must not be empty".into());
     }
-    let matchers = [spec.query.is_some(), spec.regex.is_some(), spec.path_only]
-        .iter()
-        .filter(|m| **m)
-        .count();
+    let matchers = [
+        spec.query.is_some(),
+        !spec.branches.is_empty(),
+        spec.regex.is_some(),
+        spec.path_only,
+    ]
+    .iter()
+    .filter(|m| **m)
+    .count();
     if matchers != 1 {
-        errors.push("set exactly one of query, regex or path_only".into());
+        errors.push("set exactly one of query, branches, regex or path_only".into());
+    }
+    if !spec.branches.is_empty()
+        && (!spec.stages.is_empty() || !spec.conditions.is_empty() || !spec.comparisons.is_empty())
+    {
+        errors.push(
+            "with branches, put stages, conditions and comparisons inside each branch".into(),
+        );
     }
     if spec.regex.is_none()
         && (spec.scope == Scope::Line || spec.mask.is_some() || spec.prefilter.is_some())
@@ -277,7 +304,60 @@ fn compile_spec(
             fill: mask.fill_blank_lines,
         });
     }
-    let matcher = if let Some(text) = &spec.query {
+    let mut branches = Vec::new();
+    let mut query_text = spec.query.clone();
+    let matcher = if !spec.branches.is_empty() {
+        let mut text = String::new();
+        for (index, branch) in spec.branches.iter().enumerate() {
+            let mut branch_errors = Vec::new();
+            let has_pipeline = !branch.stages.is_empty()
+                || !branch.conditions.is_empty()
+                || !branch.comparisons.is_empty();
+            let mut pipeline = crate::query_conditions::Pipeline::default();
+            // Validate boundaries independently: two incomplete branch queries
+            // must not repair each other when concatenated for grouped matching.
+            match compile_query(&branch.query, branch.stages.is_empty()) {
+                Ok((query, _)) if has_pipeline => {
+                    pipeline = crate::query_conditions::compile(
+                        &branch.conditions,
+                        &branch.stages,
+                        &branch.comparisons,
+                        &query,
+                        &mut branch_errors,
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => branch_errors.push(error),
+            }
+            branches.push(Branch {
+                start: text.len(),
+                pipeline,
+            });
+            text.push_str(&branch.query);
+            text.push('\n');
+            errors.extend(
+                branch_errors
+                    .into_iter()
+                    .map(|error| format!("branches[{index}]: {error}")),
+            );
+        }
+        let matcher = if strict {
+            compile_query(&text, false)
+                .map(|(query, capture)| Matcher::Query {
+                    query: Some(query),
+                    capture,
+                })
+                .map_err(|error| errors.push(error))
+                .ok()
+        } else {
+            Some(Matcher::Query {
+                query: None,
+                capture: None,
+            })
+        };
+        query_text = Some(text);
+        matcher
+    } else if let Some(text) = &spec.query {
         if strict
             || !spec.conditions.is_empty()
             || !spec.stages.is_empty()
@@ -320,28 +400,32 @@ fn compile_spec(
     });
     let if_file = compile_cond("if_file", &spec.if_file, errors);
     let unless_file = compile_cond("unless_file", &spec.unless_file, errors);
-    let pipeline =
-        if spec.conditions.is_empty() && spec.stages.is_empty() && spec.comparisons.is_empty() {
-            crate::query_conditions::Pipeline::default()
-        } else if let Some(Matcher::Query {
-            query: Some(query), ..
-        }) = &matcher
-        {
-            crate::query_conditions::compile(
-                &spec.conditions,
-                &spec.stages,
-                &spec.comparisons,
-                query,
-                errors,
-            )
+    let pipeline = if !spec.branches.is_empty()
+        || (spec.conditions.is_empty() && spec.stages.is_empty() && spec.comparisons.is_empty())
+    {
+        crate::query_conditions::Pipeline::default()
+    } else if let Some(Matcher::Query {
+        query: Some(query), ..
+    }) = &matcher
+    {
+        crate::query_conditions::compile(
+            &spec.conditions,
+            &spec.stages,
+            &spec.comparisons,
+            query,
+            errors,
+        )
+    } else {
+        errors.push(if !spec.conditions.is_empty() {
+            "conditions require a valid outer query".into()
         } else {
-            errors.push(if !spec.conditions.is_empty() {
-                "conditions require a valid outer query".into()
-            } else {
-                "stages and comparisons require a valid outer query".into()
-            });
-            crate::query_conditions::Pipeline::default()
-        };
+            "stages and comparisons require a valid outer query".into()
+        });
+        crate::query_conditions::Pipeline::default()
+    };
+    if spec.branches.is_empty() && spec.query.is_some() {
+        branches.push(Branch { start: 0, pipeline });
+    }
     let if_path = spec.if_path.as_ref().and_then(|condition| {
         if condition.regex.trim().is_empty() {
             errors.push("if_path.regex must not be empty".into());
@@ -404,7 +488,7 @@ fn compile_spec(
         include: include?,
         exclude: exclude?,
         matcher: matcher?,
-        query_text: spec.query,
+        query_text,
         prefilter,
         match_length,
         scope: spec.scope,
@@ -413,7 +497,7 @@ fn compile_spec(
         skip_inside,
         if_file,
         unless_file,
-        pipeline,
+        branches,
         limit: spec.limit,
     })
 }
@@ -613,25 +697,35 @@ fn compile_group(rules: &[Rule], members: &[usize]) -> Option<Group> {
     }
     let (query, capture) = compile_query(&text, false).ok()?;
     let mut pattern_rule = Vec::with_capacity(query.pattern_count());
-    let mut has_finding = vec![false; rules.len()];
+    let mut pattern_branch = Vec::with_capacity(query.pattern_count());
+    let mut has_finding = BTreeSet::new();
     for pattern in 0..query.pattern_count() {
         let offset = query.start_byte_for_pattern(pattern);
-        let rule = spans.iter().find(|(s, e, _)| (*s..*e).contains(&offset))?.2;
+        let &(start, _, rule) = spans.iter().find(|(s, e, _)| (*s..*e).contains(&offset))?;
+        let branch = rules[rule].branch_at(offset - start);
         if capture.is_some_and(|capture| {
             query.capture_quantifiers(pattern)[capture as usize]
                 != tree_sitter::CaptureQuantifier::Zero
         }) {
-            has_finding[rule] = true;
+            has_finding.insert((rule, branch));
         }
         pattern_rule.push(rule);
+        pattern_branch.push(branch);
     }
     // Every rule needs an outer @finding or a validated stage-created finding.
     members
         .iter()
-        .all(|&i| has_finding[i] || rules[i].pipeline.stage_finding)
+        .all(|&i| {
+            rules[i]
+                .branches
+                .iter()
+                .enumerate()
+                .all(|(branch, b)| has_finding.contains(&(i, branch)) || b.pipeline.stage_finding)
+        })
         .then_some(Group {
             query,
             pattern_rule,
+            pattern_branch,
             capture,
         })
 }

@@ -1,9 +1,16 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RuleFile",
-  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `regex` or `path_only`.",
+  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `branches`, `regex` or `path_only`.",
   "type": "object",
   "properties": {
+    "branches": {
+      "description": "Alternative query pipelines for one logical rule. Findings at the same\nsource range are reported once, even when several branches match.\nCannot be combined with top-level query, stages, conditions or comparisons.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/QueryBranch"
+      }
+    },
     "comparisons": {
       "description": "ANDed source-text comparisons after stages. Missing or repeated bindings reject the match.",
       "type": "array",
@@ -126,7 +133,7 @@
       ]
     },
     "query": {
-      "description": "Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.\nWhen absent here, an ordered stage must export `finding` instead.\nRun `fino tree FILE` to see node kinds and field names.",
+      "description": "Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.\nWithout an outer `@finding`, an ordered stage must export `finding` instead.\nRun `fino tree FILE` to see node kinds and field names.",
       "type": [
         "string",
         "null"
@@ -366,6 +373,37 @@
       "additionalProperties": false,
       "required": [
         "regex"
+      ]
+    },
+    "QueryBranch": {
+      "description": "One alternative query pipeline. Bindings are local to this branch.",
+      "type": "object",
+      "properties": {
+        "comparisons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BindingComparison"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueryCondition"
+          }
+        },
+        "query": {
+          "type": "string"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueryStage"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
       ]
     },
     "QueryCondition": {

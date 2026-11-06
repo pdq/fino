@@ -4,6 +4,51 @@ Tree-sitter queries match concrete syntax. A post-match predicate cannot recover
 a node that the original structural query never captured. Stages address this
 by capturing an expression slot first, then matching its selected root.
 
+## Alternative pipelines in one rule
+
+Use `[[branches]]` when different syntax forms need different pipelines. The rule
+still has one id, message, severity, set of examples and suppression identity.
+
+```toml
+id = "marked-value"
+message = "Use a different value."
+
+[[branches]]
+query = '((identifier) @finding (#eq? @finding "marker"))'
+
+[[branches]]
+query = '((call target: (identifier) @_target (arguments (_) @_value)) (#eq? @_target "emit"))'
+
+[[branches.stages]]
+from = "_value"
+unwrap_singleton = ["block"]
+query = '((identifier) @finding (#eq? @finding "marker"))'
+export = ["finding"]
+
+[[tests]]
+name = "overlapping branches report one finding"
+code = "emit(marker)"
+expect = [1]
+```
+
+Each branch requires its own `query` and can have `stages`, `conditions` and
+`comparisons`. Bindings cannot cross branches. Branches are alternatives: all
+successful branches contribute findings, with identical source ranges reported
+once. Different ranges on the same line remain separate findings. Branch order
+does not select the first successful branch.
+
+Do not combine `branches` with a top-level `query`, `regex`, `path_only`, `stages`,
+`conditions` or `comparisons`. Keep shared file/path filters, `skip_lines`,
+`skip_inside`, `limit`, compatibility aliases and tests at rule level. They apply
+to the union of branch findings. `first-per-file` is one finding across the whole
+rule, not one per branch; limits still apply before suppression comments.
+
+Validation checks every branch, including branches that never match. A branch
+error fails the file rather than returning partial findings from its siblings.
+Branches share the existing per-file query-work budgets and participate in the
+same grouped traversal as ordinary query rules. Existing single-query files
+keep their syntax and behavior.
+
 ## Root stages
 
 ```toml

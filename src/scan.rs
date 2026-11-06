@@ -493,17 +493,17 @@ fn push_query_hit(hits: &mut Vec<Hit>, node: tree_sitter::Node, lines: &Lines) {
 }
 
 fn collect_query_hits<'tree>(
-    rule: &Rule,
+    pipeline: &crate::query_conditions::Pipeline,
     ctx: &mut FileCtx<'_, 'tree>,
     query: &tree_sitter::Query,
     found: &tree_sitter::QueryMatch<'_, 'tree>,
     capture: Option<u32>,
     hits: &mut Vec<Hit>,
 ) -> Result<()> {
-    if !rule.pipeline.is_empty() {
+    if !pipeline.is_empty() {
         match ctx
             .conditions
-            .evaluate(&rule.pipeline, query, found, ctx.text.as_bytes())?
+            .evaluate(pipeline, query, found, ctx.text.as_bytes())?
         {
             crate::query_conditions::Outcome::Reject => return Ok(()),
             crate::query_conditions::Outcome::Finding(node) => {
@@ -546,7 +546,15 @@ fn rule_hits(
                     if !predicates_hold(query, found) {
                         continue;
                     }
-                    collect_query_hits(rule, ctx, query, found, *capture, &mut hits)?;
+                    let branch = rule.branch_at(query.start_byte_for_pattern(found.pattern_index));
+                    collect_query_hits(
+                        &rule.branches[branch].pipeline,
+                        ctx,
+                        query,
+                        found,
+                        *capture,
+                        &mut hits,
+                    )?;
                 }
             }
             if cursor.did_exceed_match_limit() {
@@ -810,8 +818,16 @@ pub(crate) fn source(
                     continue;
                 }
                 let rule = &engine.rules[group.pattern_rule[found.pattern_index]];
-                collect_query_hits(rule, &mut ctx, query, found, group.capture, hits)
-                    .map_err(fail)?;
+                let branch = &rule.branches[group.pattern_branch[found.pattern_index]];
+                collect_query_hits(
+                    &branch.pipeline,
+                    &mut ctx,
+                    query,
+                    found,
+                    group.capture,
+                    hits,
+                )
+                .map_err(fail)?;
             }
             if cursor.did_exceed_match_limit() {
                 return Err(fail("query match limit exceeded".into()));

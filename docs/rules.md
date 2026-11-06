@@ -71,7 +71,11 @@ Standard tree-sitter text predicates are supported, along with `#count-eq?`,
 `#count-gt?`, and `#count-lt?` for named child counts excluding comments.
 Use [scoped matching](query-stages.md) for per-capture `conditions`, ordered
 root-rebased `stages`, and source-text `comparisons`. These are not semantic
-analysis or arbitrary AST normalization.
+analysis or arbitrary AST normalization. When a logical check needs different
+pipelines for different syntax forms, keep it in one file with `[[branches]]`.
+Each branch has its own query, stages, conditions and comparisons; metadata,
+filters, suppressions and examples belong to the rule. Overlapping branches
+report the same source range only once.
 
 ## Text and path matchers
 
