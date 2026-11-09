@@ -38,14 +38,6 @@ hooks {
     }
   }
 
-  ["commit-msg"] {
-    steps {
-      ["conventional-commits"] {
-        check = "committed --config committed.toml --no-merge-commit --no-wip --no-fixup --commit-file {{ commit_msg_file }}"
-      }
-    }
-  }
-
   ["pre-push"] {
     steps {
       ["checks"] {
@@ -53,9 +45,6 @@ hooks {
       }
       ["history-secrets"] {
         check = "mise run secrets:history"
-      }
-      ["conventional-history"] {
-        check = "mise run lint:commits"
       }
     }
   }

@@ -44,10 +44,6 @@ run = "cargo clippy --locked --all-targets -- -D warnings"
 description = "Lint GitHub Actions workflows with jactionlint"
 run = "jactionlint"
 
-[tasks."lint:commits"]
-description = "Require Conventional Commits throughout reachable Git history"
-run = "bash scripts/lint-commits.sh"
-
 [tasks."secrets:files"]
 description = "Scan working files without contacting credential providers"
 run = "betterleaks dir . --redact --no-banner --validation=false --ignore-gitleaks-allow"

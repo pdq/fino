@@ -31,7 +31,8 @@ published release's `immutable` field and fails if it is not true.
 
 ## Release flow
 
-Conventional Commits drive release-please's release PRs. The manifest starts at
+Conventional PR titles become squash-merge commit messages and drive
+release-please's release PRs. Individual commit messages are not linted. The manifest starts at
 `0.0.0`; the initial feature commit is intended to produce `v0.1.0`. Merging a
 release PR creates a **draft**, never a published release directly.
 

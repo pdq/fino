@@ -260,8 +260,8 @@ mise run secrets:history
 
 `check` runs formatting checks, Clippy, tests, jactionlint, and a secret scan.
 `fix` applies formatting through hk; secret findings need manual review, not silent
-deletion. hk installs pre-commit, commit-msg, and pre-push hooks. Commits and PR titles
-must use Conventional Commits. The native `committed` binary comes from the
+deletion. hk runs pre-commit and pre-push checks. PR titles must use Conventional
+Commits; individual commit messages are not linted. The native `committed` binary comes from the
 `github:crate-ci/committed` mise backend.
 
 Secret scans redact findings and disable live credential validation. Pre-push and CI
