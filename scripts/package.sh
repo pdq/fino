@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ ! -f LICENSE || ! -f THIRD_PARTY_NOTICES ]]; then
-  echo "Select a project license and prepare dependency notices before publishing." >&2
-  exit 2
-fi
-
 target="${1:?usage: package.sh TARGET}"
 case "$target" in
   aarch64-apple-darwin|aarch64-unknown-linux-musl|x86_64-unknown-linux-musl) ;;
@@ -23,8 +18,9 @@ stage="target/package/$target"
 mkdir -p "$stage" dist
 cp "target/$target/release/fino" "$stage/fino"
 cp README.md "$stage/README.md"
-cp LICENSE "$stage/LICENSE"
 cp THIRD_PARTY_NOTICES "$stage/THIRD_PARTY_NOTICES"
 cp vendor/tree-sitter/LICENSE "$stage/tree-sitter-LICENSE"
+cp vendor/tree-sitter-elixir/LICENSE "$stage/tree-sitter-elixir-LICENSE"
+cp vendor/tree-sitter-elixir/PATCH.md "$stage/tree-sitter-elixir-PATCH.md"
 cp vendor/tree-sitter/src/unicode/LICENSE "$stage/unicode-LICENSE"
-tar -czf "dist/fino-v$version-$target.tar.gz" -C "$stage" fino README.md LICENSE THIRD_PARTY_NOTICES tree-sitter-LICENSE unicode-LICENSE
+COPYFILE_DISABLE=1 tar -czf "dist/fino-v$version-$target.tar.gz" -C "$stage" fino README.md THIRD_PARTY_NOTICES tree-sitter-LICENSE tree-sitter-elixir-LICENSE tree-sitter-elixir-PATCH.md unicode-LICENSE

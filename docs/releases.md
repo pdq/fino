@@ -2,15 +2,14 @@
 
 ## Before enabling public releases
 
-The repository stays private while its project license is undecided. The release
-workflow refuses to run on private repositories, and packaging also requires
-root `LICENSE` and `THIRD_PARTY_NOTICES` files. A passing local workflow lint is not proof that publication
-has been tested: the first complete three-platform release remains to be verified.
+A passing local workflow lint is not proof that publication has been tested:
+the first complete three-platform release remains to be verified.
 
 Before making the repository public:
 
-1. Choose a project license, add `LICENSE` and Cargo license metadata, and include
-   the required third-party notices in distributed archives.
+1. Include dependency licenses and notices in distributed archives. Refresh
+   `THIRD_PARTY_NOTICES` when dependencies change; it covers the locked dependency
+   tree, including transitive dependencies and vendored code.
 2. Review the exact staged export and run `mise run secrets:files`.
 3. Commit with signing enabled. Run `mise run secrets:history` over the entire
    resulting history before pushing. Resolve every finding; do not add blanket

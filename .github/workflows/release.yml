@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   release-please:
-    # Public releases are deliberately disabled until licensing and the export audit are complete.
+    # Public repositories support the provenance attestations used below without Enterprise Cloud.
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
