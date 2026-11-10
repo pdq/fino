@@ -1,9 +1,23 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RuleFile",
-  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `regex` or `path_only`.",
+  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `branches`, `regex` or `path_only`.",
   "type": "object",
   "properties": {
+    "branches": {
+      "description": "Alternative query pipelines for one logical rule. Findings at the same\nsource range are reported once, even when several branches match.\nCannot be combined with top-level query, stages, conditions or comparisons.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/QueryBranch"
+      }
+    },
+    "comparisons": {
+      "description": "ANDed source-text comparisons after stages. Missing or repeated bindings reject the match.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/BindingComparison"
+      }
+    },
     "compat": {
       "description": "Names this rule has in other linters, for suppression-comment compatibility.",
       "anyOf": [
@@ -14,6 +28,13 @@
           "type": "null"
         }
       ]
+    },
+    "conditions": {
+      "description": "ANDed conditions on one capture of each outer query match. Query rules only.\nMissing or repeated outer captures reject the match. Auxiliary captures stay local.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/QueryCondition"
+      }
     },
     "description": {
       "description": "Optional longer explanation: why the rule exists and how to fix findings.",
@@ -39,6 +60,17 @@
       "anyOf": [
         {
           "$ref": "#/definitions/Condition"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "if_path": {
+      "description": "Only lint root-relative paths matching this Rust regex (in addition to include/exclude globs).",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PathCondition"
         },
         {
           "type": "null"
@@ -74,6 +106,17 @@
         }
       ]
     },
+    "match_length": {
+      "description": "For `regex`: inclusive length bounds on each matched substring after masking.\nMeasures bytes, Unicode scalars (default), or extended grapheme clusters.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/TextLength"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "message": {
       "description": "Message reported for each finding.",
       "type": "string"
@@ -90,7 +133,7 @@
       ]
     },
     "query": {
-      "description": "Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.\nRun `fino tree FILE` to see node kinds and field names.",
+      "description": "Tree-sitter query over the Elixir syntax tree. Each `@finding` capture is one finding.\nWithout an outer `@finding`, an ordered stage must export `finding` instead.\nRun `fino tree FILE` to see node kinds and field names.",
       "type": [
         "string",
         "null"
@@ -139,6 +182,13 @@
         }
       ]
     },
+    "stages": {
+      "description": "Ordered root-only queries over captured nodes. Exports feed later stages and conditions.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/QueryStage"
+      }
+    },
     "tests": {
       "description": "Examples run by `fino test`. Include at least one finding and one clean case.",
       "type": "array",
@@ -164,6 +214,45 @@
     "message"
   ],
   "definitions": {
+    "BindingComparison": {
+      "type": "object",
+      "properties": {
+        "left": {
+          "description": "Outer capture or stage export name, without `@`.",
+          "type": "string"
+        },
+        "left_prefix": {
+          "description": "Literal text prepended to the left capture before comparison.",
+          "type": "string"
+        },
+        "operator": {
+          "$ref": "#/definitions/BindingOperator"
+        },
+        "right": {
+          "description": "Outer capture or stage export name, without `@`.",
+          "type": "string"
+        },
+        "right_prefix": {
+          "description": "Literal text prepended to the right capture before comparison.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "left",
+        "right",
+        "operator"
+      ]
+    },
+    "BindingOperator": {
+      "type": "string",
+      "enum": [
+        "text-eq",
+        "text-not-eq",
+        "nfc-eq",
+        "nfc-not-eq"
+      ]
+    },
     "Condition": {
       "description": "A condition matches when any given matcher matches. At least one is required.",
       "type": "object",
@@ -184,6 +273,14 @@
         }
       },
       "additionalProperties": false
+    },
+    "LengthUnit": {
+      "type": "string",
+      "enum": [
+        "bytes",
+        "scalars",
+        "graphemes"
+      ]
     },
     "Limit": {
       "oneOf": [
@@ -266,6 +363,154 @@
         }
       ]
     },
+    "PathCondition": {
+      "type": "object",
+      "properties": {
+        "regex": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "regex"
+      ]
+    },
+    "QueryBranch": {
+      "description": "One alternative query pipeline. Bindings are local to this branch.",
+      "type": "object",
+      "properties": {
+        "comparisons": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/BindingComparison"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueryCondition"
+          }
+        },
+        "query": {
+          "type": "string"
+        },
+        "stages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/QueryStage"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ]
+    },
+    "QueryCondition": {
+      "description": "A query evaluated inside exactly one captured node, without exporting captures.",
+      "type": "object",
+      "properties": {
+        "capture": {
+          "description": "Outer capture or stage export name, without `@`.",
+          "type": "string"
+        },
+        "expect": {
+          "description": "Require a valid witness, or require exhaustive absence of witnesses.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/QueryExpectation"
+            }
+          ]
+        },
+        "query": {
+          "description": "Tree-sitter-recognized single-root patterns; no @finding capture is required.\nOptimized wildcard-parent roots with children are unsupported; name the parent kind.",
+          "type": "string"
+        },
+        "relation": {
+          "description": "Search the captured node and its descendants (default), or start only at its root.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/QueryRelation"
+            }
+          ],
+          "default": "descendant-or-self"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "capture",
+        "query",
+        "expect"
+      ]
+    },
+    "QueryExpectation": {
+      "type": "string",
+      "enum": [
+        "exists",
+        "absent"
+      ]
+    },
+    "QueryRelation": {
+      "type": "string",
+      "enum": [
+        "descendant-or-self",
+        "root"
+      ]
+    },
+    "QueryStage": {
+      "description": "A root-only query after explicitly selected singleton wrappers are removed.\nZero matches rejects the outer match; multiple matches fail the file.",
+      "type": "object",
+      "properties": {
+        "export": {
+          "description": "Local capture names made available to later stages, comparisons, and conditions.\nNames cannot collide with outer captures or earlier exports. Export `finding` only\nwhen the outer query has none; its actual captured span becomes the finding.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "from": {
+          "description": "Exactly one outer capture or earlier stage export, without `@`.",
+          "type": "string"
+        },
+        "ignore_children": {
+          "description": "Named child kinds ignored during unwrapping only. Defaults to comments.",
+          "type": "array",
+          "default": [
+            "comment"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "description": "Tree-sitter-recognized single-root patterns. Every export occurs once per pattern.\nOptimized wildcard-parent roots with children are unsupported; name the parent kind.",
+          "type": "string"
+        },
+        "relation": {
+          "description": "Only root matching is supported; this does not search arbitrary descendants.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/StageRelation"
+            }
+          ],
+          "default": "root"
+        },
+        "unwrap_singleton": {
+          "description": "Named node kinds to unwrap repeatedly when they have exactly one non-ignored named child.",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "from",
+        "query"
+      ]
+    },
     "RuleCompat": {
       "type": "object",
       "properties": {
@@ -275,6 +520,16 @@
             "string",
             "null"
           ]
+        },
+        "suppressions": {
+          "description": "Dialect id to accepted target aliases. Targets are whitespace-separated, not rule ids.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -326,6 +581,42 @@
         "error",
         "warning"
       ]
+    },
+    "StageRelation": {
+      "type": "string",
+      "enum": [
+        "root"
+      ]
+    },
+    "TextLength": {
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "min": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "unit": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/LengthUnit"
+            }
+          ],
+          "default": "scalars"
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

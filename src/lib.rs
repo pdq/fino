@@ -4,9 +4,11 @@ mod directives;
 mod engine;
 mod mask;
 pub mod model;
+mod query_conditions;
 mod scan;
 mod snapshot;
 mod testing;
+pub mod text_length;
 mod tree;
 
 pub use engine::{Engine, Problems, Rule, compile_rule, load_config, rule_files};

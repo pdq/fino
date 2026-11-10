@@ -1,0 +1,33 @@
+id = "io-inspect"
+message = "Remove the debug inspection."
+description = "Debug output can expose values and clutter logs. Calls with three explicit arguments are allowed."
+query = '''
+((call target: (dot left: (alias) @finding right: (identifier) @_fun) .)
+ (#any-of? @finding "IO" "Elixir.IO") (#eq? @_fun "inspect"))
+((call target: (dot left: (alias) @finding right: (identifier) @_fun) (arguments) @_args)
+ (#any-of? @finding "IO" "Elixir.IO") (#eq? @_fun "inspect") (#count-lt? @_args 3))
+'''
+
+[compat]
+credo = "Credo.Check.Warning.IoInspect"
+
+[[tests]]
+name = "reports calls, pipes, and captures"
+code = '''
+IO.inspect(value)
+value |> IO.inspect(label: "value")
+Elixir.IO.inspect(value, label: "value")
+&IO.inspect/1
+'''
+expect = [1, 2, 3, 4]
+
+[[tests]]
+name = "allows three explicit arguments and unrelated functions"
+code = '''
+IO.inspect(:stderr, value, [])
+IO.puts(value)
+inspect(value)
+# IO.inspect(value)
+"IO.inspect(value)"
+'''
+expect = []

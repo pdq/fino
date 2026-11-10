@@ -1,0 +1,20 @@
+id = "iex-pry"
+message = "Remove the interactive breakpoint."
+description = "IEx.pry interrupts execution; remove it before shipping."
+query = '''
+((dot left: (alias) @finding right: (identifier) @_fun)
+ (#any-of? @finding "IEx" "Elixir.IEx") (#eq? @_fun "pry"))
+'''
+
+[compat]
+credo = "Credo.Check.Warning.IExPry"
+
+[[tests]]
+name = "reports calls and captures"
+code = "require IEx\nIEx.pry()\nElixir.IEx.pry()\n&IEx.pry/0\n"
+expect = [2, 3, 4]
+
+[[tests]]
+name = "allows other functions and literal text"
+code = "IEx.started?()\n# IEx.pry()\n\"IEx.pry()\"\n"
+expect = []

@@ -1,0 +1,6 @@
+include = ["**/*.ex", "**/*.exs"]
+rules_dir = "rules"
+snapshot_file = "snapshot.jsonl"
+
+[compat]
+credo_directives = true

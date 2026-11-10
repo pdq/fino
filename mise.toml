@@ -44,10 +44,6 @@ run = "cargo clippy --locked --all-targets -- -D warnings"
 description = "Lint GitHub Actions workflows with jactionlint"
 run = "jactionlint"
 
-[tasks."lint:commits"]
-description = "Require Conventional Commits throughout reachable Git history"
-run = "bash scripts/lint-commits.sh"
-
 [tasks."secrets:files"]
 description = "Scan working files without contacting credential providers"
 run = "betterleaks dir . --redact --no-banner --validation=false --ignore-gitleaks-allow"
@@ -63,3 +59,44 @@ depends = ["fmt-check", "clippy", "test", "lint:workflows", "secrets:files"]
 [tasks.fix]
 description = "Apply formatting fixes; secrets require manual review"
 run = "hk fix --all"
+
+[tasks."perf:run"]
+description = "Build release artifacts and print synthetic performance samples (no baseline writes)"
+usage = '''
+arg "<runner>" help="Generic stable runner label, not a hostname"
+arg "<profile>" help="Explicit measurement profile label"
+flag "--binary <binary>" help="Existing optimized artifact" default="target/release/fino"
+'''
+run = '''
+set -eu
+cargo build --release --locked --bin fino --example performance
+exec target/release/examples/performance run "${usage_runner?}" "${usage_profile?}" --binary "${usage_binary?}"
+'''
+
+[tasks."perf:snapshot"]
+description = "Explicitly create or replace a host-specific performance baseline"
+usage = '''
+arg "<runner>" help="Generic stable runner label, not a hostname"
+arg "<profile>" help="Explicit measurement profile label"
+arg "<baseline>" help="Baseline JSON path (explicitly overwritten)"
+flag "--binary <binary>" help="Existing optimized artifact" default="target/release/fino"
+'''
+run = '''
+set -eu
+cargo build --release --locked --bin fino --example performance
+exec target/release/examples/performance snapshot "${usage_runner?}" "${usage_profile?}" "${usage_baseline?}" --binary "${usage_binary?}"
+'''
+
+[tasks."perf:check"]
+description = "Compare release measurements with an existing matching baseline; never write it"
+usage = '''
+arg "<runner>" help="Generic stable runner label matching the baseline"
+arg "<profile>" help="Explicit measurement profile matching the baseline"
+arg "<baseline>" help="Existing host-specific baseline JSON"
+flag "--binary <binary>" help="Existing optimized artifact" default="target/release/fino"
+'''
+run = '''
+set -eu
+cargo build --release --locked --bin fino --example performance
+exec target/release/examples/performance check "${usage_runner?}" "${usage_profile?}" "${usage_baseline?}" --binary "${usage_binary?}"
+'''

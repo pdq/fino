@@ -1,0 +1,17 @@
+id = "trailing-whitespace"
+message = "Remove trailing spaces and tabs."
+description = "Keep code and comments free of trailing ASCII whitespace; literal content is allowed."
+regex = '[ \t]+$'
+scope = "line"
+prefilter = '[ \t]$'
+mask = { nodes = ["string", "charlist", "sigil", "quoted-atom"], with = "." }
+
+[[tests]]
+name = "reports trailing code and comment whitespace"
+code = "value = 1  \n# comment\t\n:ok\n"
+expect = [1, 2]
+
+[[tests]]
+name = "allows clean lines and literal content"
+code = "value = 1\ntext = \"a  \nb\"\npattern = ~s(a  \nb)\n"
+expect = []

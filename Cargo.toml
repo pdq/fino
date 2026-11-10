@@ -8,6 +8,8 @@ repository = "https://github.com/pdqcom/fino"
 description = "Declarative parallel pattern linter with violation snapshots"
 
 [dependencies]
+clap = "=4.6.7"
+clap_usage = "=5.0.0"
 fancy-regex = "=0.20.0"
 globset = "=0.4.17"
 ignore = "=0.4.24"
@@ -19,6 +21,10 @@ serde_json = "=1.0.145"
 toml = "=0.8.23"
 tree-sitter = "=0.25.10"
 tree-sitter-elixir = "=0.3.5"
+unicode-normalization = "=0.1.26"
+unicode-segmentation = "=1.13.3"
+unicode-width = { version = "=0.2.3", default-features = false }
 
 [patch.crates-io]
 tree-sitter = { path = "vendor/tree-sitter" }
+tree-sitter-elixir = { path = "vendor/tree-sitter-elixir" }

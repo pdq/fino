@@ -257,7 +257,7 @@ fn diagnostic(file: &str, line: usize, column: usize, message: String) -> Diagno
 }
 
 /// Evaluate the engine's #count-* predicates (tree-sitter evaluates text predicates).
-fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::QueryMatch) -> bool {
+pub(crate) fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::QueryMatch) -> bool {
     use tree_sitter::QueryPredicateArg::{Capture, String as Text};
     query
         .general_predicates(found.pattern_index)
@@ -327,15 +327,16 @@ impl<'a> Lines<'a> {
 }
 
 /// One file's parse tree plus lazily built masks and directives.
-struct FileCtx<'a> {
-    text: &'a str,
-    tree: tree_sitter::Tree,
-    lines: Lines<'a>,
+struct FileCtx<'text, 'tree> {
+    text: &'text str,
+    tree: &'tree tree_sitter::Tree,
+    lines: Lines<'text>,
     regions: Option<Regions>,
     masked: HashMap<String, String>,
+    conditions: crate::query_conditions::Evaluator<'tree>,
 }
 
-impl FileCtx<'_> {
+impl FileCtx<'_, '_> {
     /// The text a regex rule matches against: masked per the rule, cached per rule.
     fn subject(&mut self, rule: &Rule, cursor: &mut QueryCursor) -> Result<String> {
         if rule.masks.is_empty() {
@@ -346,7 +347,7 @@ impl FileCtx<'_> {
         }
         let regions = self
             .regions
-            .get_or_insert_with(|| Regions::collect(&self.tree, self.text.as_bytes()));
+            .get_or_insert_with(|| Regions::collect(self.tree, self.text.as_bytes()));
         let mut layers = Vec::new();
         for mask in &rule.masks {
             let mut ranges: Vec<_> = mask
@@ -480,6 +481,46 @@ struct Hit {
     end: usize,
 }
 
+fn push_query_hit(hits: &mut Vec<Hit>, node: tree_sitter::Node, lines: &Lines) {
+    let start = node.start_byte();
+    let line = lines.index(start);
+    hits.push(Hit {
+        line,
+        column: start - lines.starts[line],
+        start,
+        end: node.end_byte(),
+    });
+}
+
+fn collect_query_hits<'tree>(
+    pipeline: &crate::query_conditions::Pipeline,
+    ctx: &mut FileCtx<'_, 'tree>,
+    query: &tree_sitter::Query,
+    found: &tree_sitter::QueryMatch<'_, 'tree>,
+    capture: Option<u32>,
+    hits: &mut Vec<Hit>,
+) -> Result<()> {
+    if !pipeline.is_empty() {
+        match ctx
+            .conditions
+            .evaluate(pipeline, query, found, ctx.text.as_bytes())?
+        {
+            crate::query_conditions::Outcome::Reject => return Ok(()),
+            crate::query_conditions::Outcome::Finding(node) => {
+                push_query_hit(hits, node, &ctx.lines);
+                return Ok(());
+            }
+            crate::query_conditions::Outcome::Outer => {}
+        }
+    }
+    if let Some(capture) = capture {
+        for item in found.captures.iter().filter(|c| c.index == capture) {
+            push_query_hit(hits, item.node, &ctx.lines);
+        }
+    }
+    Ok(())
+}
+
 fn rule_hits(
     rule: &Rule,
     cursor: &mut QueryCursor,
@@ -505,16 +546,15 @@ fn rule_hits(
                     if !predicates_hold(query, found) {
                         continue;
                     }
-                    for item in found.captures.iter().filter(|c| c.index == *capture) {
-                        let start = item.node.start_byte();
-                        let line = ctx.lines.index(start);
-                        hits.push(Hit {
-                            line,
-                            column: start - ctx.lines.starts[line],
-                            start,
-                            end: item.node.end_byte(),
-                        });
-                    }
+                    let branch = rule.branch_at(query.start_byte_for_pattern(found.pattern_index));
+                    collect_query_hits(
+                        &rule.branches[branch].pipeline,
+                        ctx,
+                        query,
+                        found,
+                        *capture,
+                        &mut hits,
+                    )?;
                 }
             }
             if cursor.did_exceed_match_limit() {
@@ -554,6 +594,12 @@ fn rule_hits(
                     for found in regex.find_iter(&subject) {
                         let found =
                             found.map_err(|e| format!("regex failed for {}: {e}", rule.id))?;
+                        if rule
+                            .match_length
+                            .is_some_and(|length| !length.matches(found.as_str()))
+                        {
+                            continue;
+                        }
                         let line = lines.index(found.start());
                         push(
                             line,
@@ -568,6 +614,12 @@ fn rule_hits(
                         for found in regex.find_iter(lines.line(line)) {
                             let found =
                                 found.map_err(|e| format!("regex failed for {}: {e}", rule.id))?;
+                            if rule
+                                .match_length
+                                .is_some_and(|length| !length.matches(found.as_str()))
+                            {
+                                continue;
+                            }
                             push(line, found.start(), found.end() - found.start());
                         }
                     }
@@ -636,7 +688,15 @@ pub(crate) fn source(
             .as_bytes()
             .windows(6)
             .any(|w| w.eq_ignore_ascii_case(b"credo:"));
-    let mut nodes = if tree.root_node().has_error() || text.contains("fino:") || wants_credo {
+    let mut comments = Vec::new();
+    let mut nodes = if tree.root_node().has_error()
+        || text.contains("fino:")
+        || wants_credo
+        || engine
+            .suppression_dialects
+            .iter()
+            .any(|dialect| !dialect.raw_text)
+    {
         vec![tree.root_node()]
     } else {
         Vec::new()
@@ -652,6 +712,7 @@ pub(crate) fn source(
             ));
         }
         if node.kind() == "comment" {
+            comments.push((&text[node.byte_range()], point.row + 1));
             directives
                 .add_comment(&text[node.byte_range()], point.row + 1, &known, wants_credo)
                 .map_err(|message| diagnostic(file, point.row + 1, point.column + 1, message))?;
@@ -662,12 +723,37 @@ pub(crate) fn source(
     if tree.root_node().has_error() {
         return Err(fail("Elixir parse was incomplete".into()));
     }
+    let raw_lines: Vec<_> = if engine
+        .suppression_dialects
+        .iter()
+        .any(|dialect| dialect.raw_text)
+    {
+        text.lines()
+            .enumerate()
+            .map(|(index, line)| (line, index + 1))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    for dialect in &engine.suppression_dialects {
+        directives
+            .add_external(
+                dialect,
+                if dialect.raw_text {
+                    &raw_lines
+                } else {
+                    &comments
+                },
+            )
+            .map_err(fail)?;
+    }
     let mut ctx = FileCtx {
         text,
         lines: Lines::new(text),
-        tree,
+        tree: &tree,
         regions: None,
         masked: HashMap::new(),
+        conditions: crate::query_conditions::Evaluator::new(cursor.match_limit()),
     };
     let mut findings = Vec::new();
     let rules: Vec<(Option<usize>, &Rule)> = match only {
@@ -685,6 +771,11 @@ pub(crate) fn source(
         if (!rule.include.is_empty() && !rule.include.is_match(file))
             || path_excluded(&rule.exclude, Path::new(file))
             || directives.file_disabled(&rule.id, credo)
+            || directives.external_disabled(&rule.suppressions, None)
+            || rule
+                .if_path
+                .as_ref()
+                .is_some_and(|regex| !regex.is_match(file))
         {
             continue;
         }
@@ -726,16 +817,17 @@ pub(crate) fn source(
                 if !predicates_hold(query, found) {
                     continue;
                 }
-                for item in found.captures.iter().filter(|c| c.index == group.capture) {
-                    let start = item.node.start_byte();
-                    let line = ctx.lines.index(start);
-                    hits.push(Hit {
-                        line,
-                        column: start - ctx.lines.starts[line],
-                        start,
-                        end: item.node.end_byte(),
-                    });
-                }
+                let rule = &engine.rules[group.pattern_rule[found.pattern_index]];
+                let branch = &rule.branches[group.pattern_branch[found.pattern_index]];
+                collect_query_hits(
+                    &branch.pipeline,
+                    &mut ctx,
+                    query,
+                    found,
+                    group.capture,
+                    hits,
+                )
+                .map_err(fail)?;
             }
             if cursor.did_exceed_match_limit() {
                 return Err(fail("query match limit exceeded".into()));
@@ -759,6 +851,9 @@ pub(crate) fn source(
         for hit in hits {
             let line = hit.line + 1;
             if directives.line_disabled(&rule.id, credo, line) {
+                continue;
+            }
+            if directives.external_disabled(&rule.suppressions, Some(line)) {
                 continue;
             }
             findings.push(Finding {

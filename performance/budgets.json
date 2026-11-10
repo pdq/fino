@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "startup": { "relative_percent": 25.0, "absolute_ms": 2.0 },
+  "evaluation": { "relative_percent": 20.0, "absolute_ms": 1.0 },
+  "compilation": { "relative_percent": 20.0, "absolute_ms": 2.0 }
+}
