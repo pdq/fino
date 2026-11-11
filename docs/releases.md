@@ -14,8 +14,11 @@ Before making the repository public:
 3. Commit with signing enabled. Run `mise run secrets:history` over the entire
    resulting history before pushing. Resolve every finding; do not add blanket
    allowlists or disable detection to pass.
-4. Enable GitHub Actions to create PRs at the organization level, then allow it in
-   this repository. The org policy currently blocks the repository setting.
+4. Install the release GitHub App on `pdq/fino` and grant it Contents, Issues, and
+   Pull requests write access. Make the `CONNECT_RELEASE_CLIENT_ID` Actions variable
+   and `CONNECT_RELEASE_PRIVATE_KEY` Actions secret available to this repository.
+   The workflow requests only these permissions for the current repository and
+   revokes the token after the job.
 5. Make the repository public only after the audit. Private-repository GitHub
    artifact attestations require Enterprise Cloud; never disable attestations as
    a workaround.
@@ -49,13 +52,16 @@ The same workflow then:
    only then publishes and checks that GitHub has made the release immutable.
 
 All external actions are pinned to full release commit SHAs. The Packslip action
-downloads the CLI associated with its pinned release and verifies it. No long-lived
-signing secret is needed. Release write access is separate from Packslip signing.
+downloads the CLI associated with its pinned release and verifies it. Packslip
+signing uses GitHub OIDC, not the release App's private key. Release write access
+is separate from Packslip signing.
 
-Release-please's `GITHUB_TOKEN` cannot trigger normal PR CI events. The workflow
-explicitly dispatches CI for the generated release branch so required checks still
-run. On a failed build/sign/publish attempt, keep the release a draft and rerun the
-failed jobs. Never delete and recreate a published release or move its tag.
+Release-please uses a short-lived GitHub App installation token, so its PRs trigger
+CI normally. It does not rely on the setting that lets `GITHUB_TOKEN` create PRs
+or on a manual CI dispatch. Build, attestation, and publication jobs keep their
+separate `GITHUB_TOKEN` permissions. On a failed build/sign/publish attempt, keep
+the release a draft and rerun the failed jobs. Never delete and recreate a
+published release or move its tag.
 
 ## Consume a verified release
 
@@ -63,7 +69,7 @@ After the first release is published and verified, install an exact version:
 
 ```toml
 [tools]
-"packslip:github.com/pdqcom/fino" = "0.1.0"
+"packslip:github.com/pdq/fino" = "0.1.0"
 ```
 
 This is a future installation example, not a claim that `0.1.0` is published.
