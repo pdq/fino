@@ -102,8 +102,8 @@ one object. The content is the exact distributable `SKILL.md`, including metadat
 Install through Vercel's Skills CLI:
 
 ```sh
-aubx skills add pdqcom/fino --list
-aubx skills add pdqcom/fino --skill fino-rules fino-config
+aubx skills add pdq/fino --list
+aubx skills add pdq/fino --skill fino-rules fino-config
 ```
 
 Use `--global` for user-wide installation. Before publication, run

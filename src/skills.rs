@@ -40,7 +40,7 @@ pub fn run(args: &Args) -> Result<i32> {
         println!("Agent skills (print with `fino skills TOPIC`):");
         println!("  rules   fino-rules   Create, test, and optimize lint rules");
         println!("  config  fino-config  Configure projects, suppressions, and snapshots");
-        println!("\nInstall: aubx skills add pdqcom/fino --skill fino-rules fino-config");
+        println!("\nInstall: aubx skills add pdq/fino --skill fino-rules fino-config");
     }
     Ok(0)
 }
