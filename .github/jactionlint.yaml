@@ -1,0 +1,6 @@
+rules:
+  unpinned-uses:
+    level: error
+    policies:
+      # Shared PDQ actions follow main so organization-wide fixes apply automatically.
+      pdq/devops: ref-pin

@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
+name: Ensure work is ticketed
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ensure_work_is_ticketed:
+    name: Ensure work is ticketed
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: depot-ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check for Linear comment
+        uses: pdq/devops/.github/actions/ensure-work-is-ticketed@main
