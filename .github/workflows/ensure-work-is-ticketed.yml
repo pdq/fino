@@ -24,4 +24,34 @@ jobs:
 
     steps:
       - name: Check for Linear comment
-        uses: pdq/devops/.github/actions/ensure-work-is-ticketed@main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$PR_AUTHOR" in
+            'renovate-pdq[bot]'|'dependabot[bot]'|'connect-release[bot]')
+              echo "Ticket check is not required for $PR_AUTHOR."
+              exit 0
+              ;;
+          esac
+
+          # Allow time for Linear to post its linkback after the PR opens.
+          for attempt in {1..6}; do
+            linked=$(gh api --paginate \
+              "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+              | jq -s 'any(.[][]; .user.type == "Bot" and (.user.login == "linear[bot]" or .user.login == "linear-code[bot]"))')
+            if [[ "$linked" == true ]]; then
+              echo "Found a Linear bot comment."
+              exit 0
+            fi
+            if (( attempt < 6 )); then
+              sleep 10
+            fi
+          done
+
+          echo '::error::No Linear bot comment found. Link this PR to a Linear issue, then rerun this check.'
+          exit 1

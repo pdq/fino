@@ -16,19 +16,50 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Formatting
+            task: fmt-check
+            tools: rust dprint
+            fetch-depth: 1
+          - name: Clippy
+            task: clippy
+            tools: rust
+            fetch-depth: 1
+          - name: Tests
+            task: test
+            tools: rust
+            fetch-depth: 1
+          - name: Workflow lint
+            task: lint:workflows
+            tools: jactionlint
+            fetch-depth: 1
+          - name: Secrets (files)
+            task: secrets:files
+            tools: betterleaks
+            fetch-depth: 1
+          - name: Secrets (history)
+            task: secrets:history
+            tools: betterleaks
+            fetch-depth: 0
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ matrix.fetch-depth }}
           persist-credentials: false
       - uses: jdx/mise-action@v5.2.6 # Immutable release verified via GitHub API.
-      - run: mise run check
+        with:
+          install_args: ${{ matrix.tools }}
+      - name: Run check
+        run: mise run "$MISE_TASK"
         env:
+          MISE_TASK: ${{ matrix.task }}
           GH_TOKEN: ${{ github.token }}
-      - run: mise run secrets:history
 
   pr-title:
     name: PR title
