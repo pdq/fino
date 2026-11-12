@@ -19,7 +19,7 @@ jobs:
   ensure_work_is_ticketed:
     name: Ensure work is ticketed
     if: ${{ github.event_name == 'pull_request' }}
-    runs-on: depot-ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
 
     steps:
