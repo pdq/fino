@@ -56,7 +56,7 @@ jobs:
         with:
           install_args: ${{ matrix.tools }}
       - name: Run check
-        run: mise run "$MISE_TASK"
+        run: mise run --skip-tools "$MISE_TASK"
         env:
           MISE_TASK: ${{ matrix.task }}
           GH_TOKEN: ${{ github.token }}
