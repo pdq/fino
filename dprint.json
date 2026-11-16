@@ -12,7 +12,15 @@
   "yaml": {
     "quotes": "preferSingle"
   },
-  "excludes": ["vendor/**", "target/**", "evidence/**", "dist/**", "Cargo.lock", "mise.lock"],
+  "excludes": [
+    "vendor/**",
+    "target/**",
+    "evidence/**",
+    "dist/**",
+    "Cargo.lock",
+    "mise.lock",
+    "CHANGELOG.md"
+  ],
   "plugins": [
     "npm:@dprint/json@0.25.2",
     "npm:@dprint/markdown@0.28.2",
