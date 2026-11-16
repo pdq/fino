@@ -60,4 +60,4 @@ description: Set up and maintain Fino project configuration, file filters, rule 
 
 Report changed policy scope, commands run, and remaining findings. Keep project
 configuration separate from rule behavior; use `fino skills rules` for authoring.
-See https://github.com/pdqcom/fino/blob/main/docs/configuration.md for details.
+See https://github.com/pdq/fino/blob/main/docs/configuration.md for details.

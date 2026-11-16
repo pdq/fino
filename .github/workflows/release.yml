@@ -18,29 +18,28 @@ jobs:
     if: github.event.repository.private == false
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      actions: write
+    # Release Please authenticates as the release App, not GITHUB_TOKEN.
+    permissions: {}
     outputs:
       created: ${{ steps.release.outputs.release_created }}
       tag: ${{ steps.release.outputs.tag_name }}
       sha: ${{ steps.release.outputs.sha }}
       id: ${{ steps.release.outputs.id }}
     steps:
+      - name: Generate release app token
+        id: release_app_token
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0; immutable release.
+        with:
+          client-id: ${{ vars.CONNECT_RELEASE_CLIENT_ID }}
+          private-key: ${{ secrets.CONNECT_RELEASE_PRIVATE_KEY }}
+          # With no owner/repositories inputs, access is limited to this repository.
+          permission-contents: write
+          permission-issues: write
+          permission-pull-requests: write
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         id: release
-      - name: Run CI for release PRs created by GITHUB_TOKEN
-        if: steps.release.outputs.prs_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_PR: ${{ steps.release.outputs.pr }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          branch=$(jq -er '.headBranchName' <<< "$RELEASE_PR")
-          gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$branch"
+        with:
+          token: ${{ steps.release_app_token.outputs.token }}
 
   build:
     needs: release-please

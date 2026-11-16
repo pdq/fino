@@ -81,8 +81,8 @@ Install the separate rule-authoring and project-configuration skills through
 [Vercel's Skills CLI](https://github.com/vercel-labs/skills):
 
 ```sh
-aubx skills add pdqcom/fino --list
-aubx skills add pdqcom/fino --skill fino-rules fino-config
+aubx skills add pdq/fino --list
+aubx skills add pdq/fino --skill fino-rules fino-config
 ```
 
 `fino skills rules` and `fino skills config` print the same portable `SKILL.md`

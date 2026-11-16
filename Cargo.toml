@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 readme = "README.md"
-repository = "https://github.com/pdqcom/fino"
+repository = "https://github.com/pdq/fino"
 description = "Declarative parallel pattern linter with violation snapshots"
 
 [dependencies]
