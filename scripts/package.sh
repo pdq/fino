@@ -8,7 +8,9 @@ case "$target" in
 esac
 
 package_id=$(cargo pkgid --locked)
-version=${package_id##*@}
+# Cargo may omit the package name when it matches the final path component.
+version=${package_id##*#}
+version=${version##*@}
 if [[ -n "${RELEASE_TAG:-}" && "$RELEASE_TAG" != "v$version" ]]; then
   echo "release tag does not match the package version" >&2
   exit 2
