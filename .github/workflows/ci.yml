@@ -4,18 +4,20 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, edited]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # Metadata-only edits must not cancel checks for a code or base-branch change.
+  group: ci-${{ github.workflow }}-${{ github.ref }}-${{ github.event.action == 'edited' && !github.event.changes.base && 'metadata' || 'code' }}
   cancel-in-progress: true
 
 jobs:
   checks:
+    if: github.event.action != 'edited' || github.event.changes.base != null
     name: ${{ matrix.name }}
     strategy:
       fail-fast: false
@@ -62,6 +64,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
   platforms:
+    if: github.event.action != 'edited' || github.event.changes.base != null
     name: Build (${{ matrix.target }})
     strategy:
       fail-fast: false
