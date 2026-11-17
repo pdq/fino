@@ -2,7 +2,7 @@ name: PR title
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, edited]
   workflow_dispatch:
 
 permissions:
