@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/pdq/fino/compare/v0.1.0...v0.1.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* repair packaging and PR checks [PLT-4628] ([#7](https://github.com/pdq/fino/issues/7)) ([76a4a24](https://github.com/pdq/fino/commit/76a4a247aa7c8aef211daed99bfd9650008e172b))
+
 ## 0.1.0 (2026-11-16)
 
 
