@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@v5.2.6 # Immutable release verified via GitHub API.
+      - uses: jdx/mise-action@v5.2.10 # Immutable release verified via GitHub API.
         with:
           install_args: github:crate-ci/committed
       - name: Require a Conventional Commit title
