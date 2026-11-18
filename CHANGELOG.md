@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/pdq/fino/compare/v0.1.1...v0.1.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* **perf:** share query compilation [PLT-4630] ([#9](https://github.com/pdq/fino/issues/9)) ([1d9de53](https://github.com/pdq/fino/commit/1d9de536b9f138ff8ee9f51db717c65a9faa4717))
+
+
+### Performance Improvements
+
+* share query compilation [PLT-4630] ([1d9de53](https://github.com/pdq/fino/commit/1d9de536b9f138ff8ee9f51db717c65a9faa4717))
+
 ## [0.1.1](https://github.com/pdq/fino/compare/v0.1.0...v0.1.1) (2026-11-17)
 
 
