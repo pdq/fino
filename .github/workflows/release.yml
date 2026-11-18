@@ -134,7 +134,7 @@ jobs:
           pattern: fino-*
           path: dist
           merge-multiple: true
-      - uses: jdx/packslip@v1.11.3 # Immutable release verified via GitHub API.
+      - uses: jdx/packslip@v1.11.4 # Immutable release verified via GitHub API.
         id: packslip
         with:
           artifacts: dist/*.tar.gz
