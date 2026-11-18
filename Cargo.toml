@@ -10,7 +10,7 @@ description = "Declarative parallel pattern linter with violation snapshots"
 [dependencies]
 clap = "=4.6.7"
 clap_usage = "=5.0.0"
-fancy-regex = "=0.20.0"
+fancy-regex = "=0.20.2"
 globset = "=0.4.17"
 ignore = "=0.4.24"
 rayon = "=1.11.0"
