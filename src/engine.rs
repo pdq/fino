@@ -1,16 +1,18 @@
 //! Loads the project configuration and rule files and compiles them.
 use crate::Result;
 use crate::model::{Condition, Limit, ProjectConfig, RuleFile, RuleTest, Scope, Severity};
+use crate::query_cache::QueryCompiler;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tree_sitter::{Language, Query};
 
 pub(crate) enum Matcher {
     /// `query` is compiled for strict loads (validate/test); fast loads compile it in a group.
     Query {
-        query: Option<Query>,
+        query: Option<Arc<Query>>,
         capture: Option<u32>,
     },
     Regex(fancy_regex::Regex),
@@ -19,7 +21,7 @@ pub(crate) enum Matcher {
 
 pub(crate) struct MaskLayer {
     pub nodes: Vec<crate::model::MaskNode>,
-    pub query: Option<Query>,
+    pub query: Option<Arc<Query>>,
     /// Replacement byte; `None` removes masked content.
     pub with: Option<u8>,
     pub fill: bool,
@@ -27,7 +29,7 @@ pub(crate) struct MaskLayer {
 
 pub(crate) struct Cond {
     pub regex: Option<fancy_regex::Regex>,
-    pub query: Option<Query>,
+    pub query: Option<Arc<Query>>,
 }
 
 pub struct Rule {
@@ -48,7 +50,7 @@ pub struct Rule {
     pub(crate) scope: Scope,
     pub(crate) masks: Vec<MaskLayer>,
     pub(crate) skip_lines: Option<Cond>,
-    pub(crate) skip_inside: Option<Query>,
+    pub(crate) skip_inside: Option<Arc<Query>>,
     pub(crate) if_file: Option<Cond>,
     pub(crate) unless_file: Option<Cond>,
     pub(crate) branches: Vec<Branch>,
@@ -71,7 +73,7 @@ impl Rule {
 
 /// Several query rules compiled as one query, so each file is traversed once per group.
 pub(crate) struct Group {
-    pub query: Query,
+    pub query: Arc<Query>,
     pub pattern_rule: Vec<usize>,
     pub pattern_branch: Vec<usize>,
     pub capture: Option<u32>,
@@ -119,45 +121,24 @@ pub(crate) fn globs(patterns: &[String]) -> std::result::Result<GlobSet, String>
 /// non-comment children of a capture: `(#count-eq? @args 2)`.
 pub(crate) const COUNT_PREDICATES: [&str; 3] = ["count-eq?", "count-gt?", "count-lt?"];
 
+#[cfg(test)]
 pub(crate) fn compile_query(
     text: &str,
     finding: bool,
-) -> std::result::Result<(Query, Option<u32>), String> {
-    let query = Query::new(&language(), text).map_err(|e| format!("invalid query: {e}"))?;
-    for index in 0..query.pattern_count() {
-        if !query.property_settings(index).is_empty()
-            || !query.property_predicates(index).is_empty()
-        {
-            return Err("query directives (#set!, #is?) are not supported".into());
-        }
-        for predicate in query.general_predicates(index) {
-            let valid = COUNT_PREDICATES.contains(&predicate.operator.as_ref())
-                && matches!(
-                    predicate.args.as_ref(),
-                    [tree_sitter::QueryPredicateArg::Capture(_), tree_sitter::QueryPredicateArg::String(n)]
-                        if n.parse::<usize>().is_ok()
-                );
-            if !valid {
-                return Err(format!(
-                    "unsupported predicate #{}; use #eq?, #match?, #any-of?, their not- forms, \
-                     or #count-eq?/#count-gt?/#count-lt? @capture N",
-                    predicate.operator
-                ));
-            }
-        }
-    }
-    let capture = query.capture_index_for_name("finding");
-    if finding && capture.is_none() {
-        return Err("query needs a @finding capture".into());
-    }
-    Ok((query, capture))
+) -> std::result::Result<(Arc<Query>, Option<u32>), String> {
+    QueryCompiler::default().compile(text, finding)
 }
 
 fn compile_regex(text: &str) -> std::result::Result<fancy_regex::Regex, String> {
     fancy_regex::Regex::new(text).map_err(|e| format!("invalid regex {text:?}: {e}"))
 }
 
-fn compile_cond(name: &str, cond: &Option<Condition>, errors: &mut Vec<String>) -> Option<Cond> {
+fn compile_cond(
+    name: &str,
+    cond: &Option<Condition>,
+    errors: &mut Vec<String>,
+    compiler: &QueryCompiler,
+) -> Option<Cond> {
     let cond = cond.as_ref()?;
     if cond.regex.is_none() && cond.query.is_none() {
         errors.push(format!("{name} needs regex or query"));
@@ -169,7 +150,8 @@ fn compile_cond(name: &str, cond: &Option<Condition>, errors: &mut Vec<String>) 
             .ok()
     });
     let query = cond.query.as_deref().and_then(|q| {
-        compile_query(q, false)
+        compiler
+            .compile(q, false)
             .map(|(q, _)| q)
             .map_err(|e| errors.push(format!("{name}: {e}")))
             .ok()
@@ -189,11 +171,15 @@ fn valid_id(id: &str) -> bool {
 
 /// Parse and compile one rule file, collecting every problem.
 pub fn compile_rule(path: &Path) -> (Option<Rule>, Problems) {
-    compile_rule_with(path, true)
+    compile_rule_with(path, true, &QueryCompiler::default())
 }
 
 /// `strict` compiles each rule's own query; otherwise query rules are compiled later in groups.
-pub(crate) fn compile_rule_with(path: &Path, strict: bool) -> (Option<Rule>, Problems) {
+pub(crate) fn compile_rule_with(
+    path: &Path,
+    strict: bool,
+    compiler: &QueryCompiler,
+) -> (Option<Rule>, Problems) {
     let mut problems = Problems {
         file: path.display().to_string(),
         ..Problems::default()
@@ -212,7 +198,7 @@ pub(crate) fn compile_rule_with(path: &Path, strict: bool) -> (Option<Rule>, Pro
             return (None, problems);
         }
     };
-    let rule = compile_spec(spec, path, &mut problems, strict);
+    let rule = compile_spec(spec, path, &mut problems, strict, compiler);
     (
         if problems.errors.is_empty() {
             rule
@@ -228,6 +214,7 @@ fn compile_spec(
     path: &Path,
     problems: &mut Problems,
     strict: bool,
+    compiler: &QueryCompiler,
 ) -> Option<Rule> {
     let errors = &mut problems.errors;
     if !valid_id(&spec.id) {
@@ -292,7 +279,8 @@ fn compile_spec(
             ));
         }
         let query = mask.query.as_deref().and_then(|q| {
-            compile_query(q, false)
+            compiler
+                .compile(q, false)
                 .map(|(q, _)| q)
                 .map_err(|e| errors.push(format!("mask[{n}]: {e}")))
                 .ok()
@@ -316,7 +304,7 @@ fn compile_spec(
             let mut pipeline = crate::query_conditions::Pipeline::default();
             // Validate boundaries independently: two incomplete branch queries
             // must not repair each other when concatenated for grouped matching.
-            match compile_query(&branch.query, branch.stages.is_empty()) {
+            match compiler.compile(&branch.query, branch.stages.is_empty()) {
                 Ok((query, _)) if has_pipeline => {
                     pipeline = crate::query_conditions::compile(
                         &branch.conditions,
@@ -324,6 +312,7 @@ fn compile_spec(
                         &branch.comparisons,
                         &query,
                         &mut branch_errors,
+                        compiler,
                     );
                 }
                 Ok(_) => {}
@@ -342,7 +331,8 @@ fn compile_spec(
             );
         }
         let matcher = if strict {
-            compile_query(&text, false)
+            compiler
+                .compile(&text, false)
                 .map(|(query, capture)| Matcher::Query {
                     query: Some(query),
                     capture,
@@ -363,7 +353,8 @@ fn compile_spec(
             || !spec.stages.is_empty()
             || !spec.comparisons.is_empty()
         {
-            compile_query(text, spec.stages.is_empty())
+            compiler
+                .compile(text, spec.stages.is_empty())
                 .map(|(query, capture)| Matcher::Query {
                     query: Some(query),
                     capture,
@@ -391,15 +382,16 @@ fn compile_spec(
     });
     let include = globs(&spec.include).map_err(|e| errors.push(e)).ok();
     let exclude = globs(&spec.exclude).map_err(|e| errors.push(e)).ok();
-    let skip_lines = compile_cond("skip_lines", &spec.skip_lines, errors);
+    let skip_lines = compile_cond("skip_lines", &spec.skip_lines, errors, compiler);
     let skip_inside = spec.skip_inside.as_deref().and_then(|q| {
-        compile_query(q, false)
+        compiler
+            .compile(q, false)
             .map(|(q, _)| q)
             .map_err(|e| errors.push(format!("skip_inside: {e}")))
             .ok()
     });
-    let if_file = compile_cond("if_file", &spec.if_file, errors);
-    let unless_file = compile_cond("unless_file", &spec.unless_file, errors);
+    let if_file = compile_cond("if_file", &spec.if_file, errors, compiler);
+    let unless_file = compile_cond("unless_file", &spec.unless_file, errors, compiler);
     let pipeline = if !spec.branches.is_empty()
         || (spec.conditions.is_empty() && spec.stages.is_empty() && spec.comparisons.is_empty())
     {
@@ -414,6 +406,7 @@ fn compile_spec(
             &spec.comparisons,
             query,
             errors,
+            compiler,
         )
     } else {
         errors.push(if !spec.conditions.is_empty() {
@@ -560,9 +553,10 @@ impl Engine {
         let mut problems = Vec::new();
         let mut ids = BTreeSet::new();
         use rayon::prelude::*;
+        let compiler = QueryCompiler::default();
         let compiled: Vec<_> = files
             .par_iter()
-            .map(|file| compile_rule_with(file, strict))
+            .map(|file| compile_rule_with(file, strict, &compiler))
             .collect();
         for (rule, mut found) in compiled {
             if let Some(rule) = rule {
@@ -591,7 +585,7 @@ impl Engine {
         let groups = if strict {
             Vec::new()
         } else {
-            group_queries(&rules, &mut problems)
+            group_queries(&rules, &mut problems, &compiler)
         };
         let timings = (0..rules.len() + 2)
             .map(|_| std::sync::atomic::AtomicU64::new(0))
@@ -633,7 +627,11 @@ impl Engine {
 
 /// Compile query rules in a few groups, in parallel. A group that fails is recompiled
 /// rule by rule so errors point at the right file.
-fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
+fn group_queries(
+    rules: &[Rule],
+    problems: &mut [Problems],
+    compiler: &QueryCompiler,
+) -> Vec<Group> {
     use rayon::prelude::*;
     let query_rules: Vec<usize> = (0..rules.len())
         .filter(|&i| rules[i].query_text.is_some())
@@ -656,7 +654,7 @@ fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
     }
     let compiled: Vec<std::result::Result<Group, Vec<usize>>> = bins
         .into_par_iter()
-        .map(|(_, members)| compile_group(rules, &members).ok_or(members))
+        .map(|(_, members)| compile_group(rules, &members, compiler).ok_or(members))
         .collect();
     let mut groups = Vec::new();
     for result in compiled {
@@ -665,12 +663,13 @@ fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
             Err(members) => {
                 for i in members {
                     // A bad member must not make valid neighbors look invalid.
-                    if let Some(group) = compile_group(rules, &[i]) {
+                    if let Some(group) = compile_group(rules, &[i], compiler) {
                         groups.push(group);
                         continue;
                     }
                     let text = rules[i].query_text.as_deref().unwrap_or_default();
-                    let error = compile_query(text, true)
+                    let error = compiler
+                        .compile(text, true)
                         .err()
                         .unwrap_or_else(|| "query could not be grouped".into());
                     if let Some(found) = problems
@@ -686,7 +685,7 @@ fn group_queries(rules: &[Rule], problems: &mut [Problems]) -> Vec<Group> {
     groups
 }
 
-fn compile_group(rules: &[Rule], members: &[usize]) -> Option<Group> {
+fn compile_group(rules: &[Rule], members: &[usize], compiler: &QueryCompiler) -> Option<Group> {
     let mut text = String::new();
     let mut spans = Vec::new();
     for &i in members {
@@ -695,7 +694,7 @@ fn compile_group(rules: &[Rule], members: &[usize]) -> Option<Group> {
         text.push('\n');
         spans.push((start, text.len(), i));
     }
-    let (query, capture) = compile_query(&text, false).ok()?;
+    let (query, capture) = compiler.compile(&text, false).ok()?;
     let mut pattern_rule = Vec::with_capacity(query.pattern_count());
     let mut pattern_branch = Vec::with_capacity(query.pattern_count());
     let mut has_finding = BTreeSet::new();

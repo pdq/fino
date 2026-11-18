@@ -40,6 +40,20 @@ reviewing measurements. The parent directory of a baseline must exist.
 
 ## Measurements
 
+The `check` and `snapshot` summaries report total command time, with separate
+startup and scan durations. Startup includes reading configuration, compiling
+rules, loading the snapshot and selecting explicit file arguments. Total also
+includes snapshot updates when requested and releasing the compiled engine.
+It includes diagnostic rendering in human mode, but excludes the final summary
+line or JSON serialization and output. JSON keeps `elapsed_ms` as scan time for compatibility and adds
+`startup_ms` and `total_ms`. Cumulative `--timings` spans are separate and can
+exceed wall time because workers run concurrently.
+
+Identical query strings share one compilation during an engine load. This
+reduces repeated work across alternative pipelines without a background worker,
+disk cache or stale-rule invalidation policy. New engine loads read current
+rules; scanned source, findings and execution state are not shared.
+
 `performance/fixtures.json` (fixture version 2) fixes 1, 32, and 256 files, eight
 units per file, two warmups, eleven raw samples, and four parallel workers.
 Three legacy scenarios cover one plain AST query, eight grouped AST rules, and

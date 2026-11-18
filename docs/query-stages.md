@@ -129,7 +129,11 @@ text, including composition across the prefix boundary. Prefixed comparisons
 charge both prefixes and captures to the predicate-work budget; they stream the
 comparison rather than allocating concatenated strings.
 
-Queries compile once. Wrapper resolution and scoped results are cached per file.
+During each engine load, identical query text compiles once and is shared across
+rules and branches. Parallel loaders share the same compilation, including
+errors. Caller-specific requirements and branch bindings remain independent.
+There is no global or persistent cache: the next load reads the current rules.
+Wrapper resolution and scoped results are cached per scanned file.
 Query overflow, work-budget exhaustion and ambiguous stages fail the file; they
 never establish a successful negative condition. Rules without these features
 retain the legacy matcher fast path.

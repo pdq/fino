@@ -7,7 +7,22 @@ use cli::Args;
 use fino::model::{ProjectConfig, RuleFile};
 use fino::{Engine, Problems, Result, Snapshot};
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use std::{fs, io::Read, process};
+
+#[derive(serde::Serialize)]
+struct CheckTiming {
+    startup_ms: f64,
+    total_ms: f64,
+}
+
+#[derive(serde::Serialize)]
+struct TimedReport<'a> {
+    #[serde(flatten)]
+    report: &'a fino::Report,
+    #[serde(flatten)]
+    timing: &'a CheckTiming,
+}
 
 fn main() {
     match run() {
@@ -166,6 +181,7 @@ fn schema(args: &Args) -> Result<i32> {
 }
 
 fn lint(args: &Args, config: &Path) -> Result<i32> {
+    let started = Instant::now();
     if args.update && args.command != "snapshot" {
         return Err("--update is only supported by snapshot".into());
     }
@@ -179,6 +195,7 @@ fn lint(args: &Args, config: &Path) -> Result<i32> {
     }
     let snapshot = Snapshot::load(&engine.snapshot_path)?;
     let files = selected_files(args)?;
+    let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
     let mut report = engine.scan(&args.root, files.as_deref(), args.threads, &snapshot)?;
     if report.errors.is_empty() && args.command == "snapshot" {
         snapshot.write_update(
@@ -193,17 +210,33 @@ fn lint(args: &Args, config: &Path) -> Result<i32> {
         }
         report.stale.clear();
     }
+    let rule_count = engine.rules.len();
+    let rule_timings = args.timings.then(|| engine.timings());
+    if !args.json {
+        output::human(&report, &engine, args);
+    }
+    // Releasing native query objects can take measurable time for large policies.
+    // Include that work, rather than printing a "total" before cleanup happens.
+    drop(engine);
+    let timing = CheckTiming {
+        startup_ms,
+        total_ms: started.elapsed().as_secs_f64() * 1000.0,
+    };
     if args.json {
         println!(
             "{}",
-            serde_json::to_string(&report).map_err(|e| e.to_string())?
+            serde_json::to_string(&TimedReport {
+                report: &report,
+                timing: &timing
+            })
+            .map_err(|e| e.to_string())?
         );
     } else {
-        output::human(&report, &engine, args);
+        output::summary(&report, rule_count, args, &timing);
     }
-    if args.timings {
+    if let Some(rule_timings) = rule_timings {
         eprintln!("cumulative time across threads:");
-        for (name, time) in engine.timings() {
+        for (name, time) in rule_timings {
             eprintln!(
                 "  {:>10.1} ms  {}",
                 time.as_secs_f64() * 1000.0,

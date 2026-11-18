@@ -3,8 +3,10 @@ use crate::Result;
 use crate::model::{
     BindingComparison, BindingOperator, QueryCondition, QueryExpectation, QueryRelation, QueryStage,
 };
+use crate::query_cache::QueryCompiler;
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tree_sitter::{
     CaptureQuantifier, Node, Query, QueryCursor, QueryCursorOptions, QueryMatch, StreamingIterator,
@@ -13,14 +15,14 @@ use unicode_normalization::UnicodeNormalization;
 
 struct CompiledCondition {
     capture: usize,
-    query: Query,
+    query: Arc<Query>,
     relation: QueryRelation,
     expect: QueryExpectation,
 }
 
 struct Stage {
     from: usize,
-    query: Query,
+    query: Arc<Query>,
     unwrap: Vec<u16>,
     ignore: Vec<u16>,
     exports: Vec<(u32, usize)>,
@@ -50,8 +52,13 @@ impl Pipeline {
     }
 }
 
-fn rooted_query(text: &str) -> Result<Query> {
-    let (query, _) = crate::engine::compile_query(text, false)?;
+#[cfg(test)]
+fn rooted_query(text: &str) -> Result<Arc<Query>> {
+    rooted_query_with(text, &QueryCompiler::default())
+}
+
+fn rooted_query_with(text: &str, compiler: &QueryCompiler) -> Result<Arc<Query>> {
+    let (query, _) = compiler.compile(text, false)?;
     if query.pattern_count() == 0 {
         return Err("query needs at least one pattern".into());
     }
@@ -96,6 +103,7 @@ pub(crate) fn compile(
     comparisons: &[BindingComparison],
     outer: &Query,
     errors: &mut Vec<String>,
+    compiler: &QueryCompiler,
 ) -> Pipeline {
     let mut pipeline = Pipeline {
         enabled: !conditions.is_empty() || !stages.is_empty() || !comparisons.is_empty(),
@@ -112,7 +120,8 @@ pub(crate) fn compile(
             let from = binding(&pipeline.bindings, &spec.from, "from")?;
             let unwrap = validate_kinds(&spec.unwrap_singleton, "unwrap_singleton")?;
             let ignore = validate_kinds(&spec.ignore_children, "ignore_children")?;
-            let query = rooted_query(&spec.query).map_err(|error| format!("query: {error}"))?;
+            let query = rooted_query_with(&spec.query, compiler)
+                .map_err(|error| format!("query: {error}"))?;
             let mut exports = Vec::new();
             let mut names = pipeline.bindings.clone();
             for (i, name) in spec.export.iter().enumerate() {
@@ -172,7 +181,8 @@ pub(crate) fn compile(
             let capture = pipeline.bindings.get(&spec.capture).copied().ok_or_else(|| {
                 format!("capture: unknown outer capture or stage export {:?} (use its name without @)", spec.capture)
             })?;
-            let query = rooted_query(&spec.query).map_err(|error| format!("query: {error}"))?;
+            let query = rooted_query_with(&spec.query, compiler)
+                .map_err(|error| format!("query: {error}"))?;
             Ok(CompiledCondition {
                 capture,
                 query,
@@ -853,7 +863,14 @@ mod tests {
             expect: QueryExpectation::Exists,
         }];
         let mut errors = Vec::new();
-        let pipeline = compile(&specs, &[], &[], &outer, &mut errors);
+        let pipeline = compile(
+            &specs,
+            &[],
+            &[],
+            &outer,
+            &mut errors,
+            &QueryCompiler::default(),
+        );
         assert!(errors.is_empty());
         let mut evaluator = Evaluator::new(16_384);
         let mut matches = cursor.matches(&outer, tree.root_node(), text.as_bytes());
@@ -887,7 +904,14 @@ mod tests {
         let (outer, _) = crate::engine::compile_query("(list) @finding @_scope", true).unwrap();
         let stage: QueryStage = toml::from_str("from = '_scope'\nunwrap_singleton = ['list']\nquery = '(identifier) @item'\nexport = ['item']\n").unwrap();
         let mut errors = Vec::new();
-        let pipeline = compile(&[], &[stage], &[], &outer, &mut errors);
+        let pipeline = compile(
+            &[],
+            &[stage],
+            &[],
+            &outer,
+            &mut errors,
+            &QueryCompiler::default(),
+        );
         assert!(errors.is_empty());
         let mut evaluator = Evaluator::new(16_384);
         let mut matches = cursor.matches(&outer, tree.root_node(), text.as_bytes());
