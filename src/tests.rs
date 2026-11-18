@@ -526,6 +526,28 @@ fn fast_grouped_loading_matches_strict_loading() {
     }
 }
 
+#[test]
+fn shared_query_compilation_does_not_reuse_stale_rules_across_engine_loads() {
+    let (root, first) = project(
+        "",
+        &[
+            "id = 'marker'\nmessage = 'Marker.'\nquery = '((identifier) @finding (#eq? @finding \"first\"))'\n",
+        ],
+    );
+    assert_eq!(lines(&first, "a.ex", "first\nsecond\n"), [1]);
+    fs::write(root.join(".fino/rules/marker.toml"),
+        "id = 'marker'\nmessage = 'Marker.'\nquery = '((identifier) @finding (#eq? @finding \"second\"))'\n"
+    ).unwrap();
+    for (engine, problems) in [
+        Engine::load(&root.join(".fino/config.toml"), None).unwrap(),
+        Engine::load_fast(&root.join(".fino/config.toml")).unwrap(),
+    ] {
+        assert!(problems.iter().all(|p| p.errors.is_empty()));
+        assert_eq!(lines(&engine, "a.ex", "first\nsecond\n"), [2]);
+    }
+    assert_eq!(lines(&first, "a.ex", "first\nsecond\n"), [1]);
+}
+
 const SCOPED: &str = r#"
 id = "scoped"
 message = "Scoped match."

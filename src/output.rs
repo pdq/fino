@@ -289,17 +289,23 @@ pub fn human(report: &Report, engine: &Engine, args: &Args) {
             colored("stale snapshot entry", "33", stderr_color)
         );
     }
+}
+
+pub fn summary(report: &Report, rule_count: usize, args: &Args, timing: &crate::CheckTiming) {
+    let stdout_color = color(args, std::io::stdout().is_terminal());
     println!(
-        "{}: {} files, {} rules, {} findings, {} errors, {:.2} ms ({})",
+        "{}: {} files, {} rules, {} findings, {} errors, {:.2} ms total ({:.2} ms startup, {:.2} ms scan; {})",
         colored(
             if report.passed { "PASS" } else { "FAIL" },
             if report.passed { "32" } else { "31" },
             stdout_color
         ),
         report.files,
-        engine.rules.len(),
+        rule_count,
         report.findings.len(),
         report.errors.len(),
+        timing.total_ms,
+        timing.startup_ms,
         report.elapsed_ms,
         safe(&report.scope)
     );

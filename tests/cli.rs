@@ -418,8 +418,10 @@ fn human_options_never_change_json_shape_or_lint_truth() {
         &["--color", "always", "--context", "9", "--group-by", "rule"],
         1,
     );
-    baseline.as_object_mut().unwrap().remove("elapsed_ms");
-    styled.as_object_mut().unwrap().remove("elapsed_ms");
+    for name in ["elapsed_ms", "startup_ms", "total_ms"] {
+        baseline.as_object_mut().unwrap().remove(name);
+        styled.as_object_mut().unwrap().remove(name);
+    }
     assert_eq!(baseline, styled);
     let missing = project.human(&["missing.ex", "--color", "never"], false);
     assert_eq!(missing.status.code(), Some(2));
@@ -427,6 +429,30 @@ fn human_options_never_change_json_shape_or_lint_truth() {
         String::from_utf8(missing.stderr)
             .unwrap()
             .contains("missing.ex")
+    );
+}
+
+#[test]
+fn checks_report_total_startup_and_scan_time_without_changing_scan_elapsed_semantics() {
+    let project = Project::new();
+    project.source(":ok\n");
+    let started = std::time::Instant::now();
+    let json = project.run("check", &[], 0);
+    let wall_ms = started.elapsed().as_secs_f64() * 1000.0;
+    let startup = json["startup_ms"].as_f64().unwrap();
+    let total = json["total_ms"].as_f64().unwrap();
+    let scan = json["elapsed_ms"].as_f64().unwrap();
+    assert!(startup >= 0.0 && scan >= 0.0);
+    assert!(total >= startup + scan, "{json}");
+    assert!(total <= wall_ms, "{json}");
+    let output = project.human(&["--color", "never"], false);
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains(" ms total (")
+            && text.contains(" ms startup, ")
+            && text.contains(" ms scan; "),
+        "{text}"
     );
 }
 
