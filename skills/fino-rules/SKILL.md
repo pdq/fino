@@ -42,7 +42,7 @@ description: Create, test, debug, and optimize declarative Fino lint rules in TO
    searches. Use `conditions` for checks scoped to one capture, `stages` for
    root matching with explicit singleton unwrapping, and `comparisons` for source
    text equality only when a simpler query cannot express the policy. Consult
-   https://github.com/pdqcom/fino/blob/main/docs/query-stages.md for semantics.
+   https://github.com/pdq/fino/blob/main/docs/query-stages.md for semantics.
 
 ## Minimal query rule
 
@@ -68,5 +68,5 @@ expect = []
 For a Credo migration, declare `[compat] credo = "Credo.Check.Warning.IoInspect"`
 only when that identity is intentional. Test behavior rather than assuming parity.
 Do not adopt snapshots or copy private application checks without permission.
-See https://github.com/pdqcom/fino/blob/main/docs/rules.md for the rule guide
+See https://github.com/pdq/fino/blob/main/docs/rules.md for the rule guide
 and runnable, generic examples.

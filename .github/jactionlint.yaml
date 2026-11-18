@@ -1,0 +1,9 @@
+online: true
+
+rules:
+  unpinned-uses:
+    level: error
+    policies:
+      '*': immutable-release
+      # Shared PDQ actions follow main so organization-wide fixes apply automatically.
+      pdq/devops: ref-pin

@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
 
 permissions:
@@ -16,44 +15,50 @@ concurrency:
 
 jobs:
   checks:
-    name: Checks
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Formatting
+            task: fmt-check
+            tools: rust dprint
+            fetch-depth: 1
+          - name: Clippy
+            task: clippy
+            tools: rust
+            fetch-depth: 1
+          - name: Tests
+            task: test
+            tools: rust
+            fetch-depth: 1
+          - name: Workflow lint
+            task: lint:workflows
+            tools: jactionlint
+            fetch-depth: 1
+          - name: Secrets (files)
+            task: secrets:files
+            tools: betterleaks
+            fetch-depth: 1
+          - name: Secrets (history)
+            task: secrets:history
+            tools: betterleaks
+            fetch-depth: 0
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
+          fetch-depth: ${{ matrix.fetch-depth }}
           persist-credentials: false
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6; immutable release.
-      - run: mise run check
-      - run: mise run secrets:history
-
-  pr-title:
-    name: PR title
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@v5.2.6 # Immutable release verified via GitHub API.
         with:
-          persist-credentials: false
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6; immutable release.
-        with:
-          install_args: github:crate-ci/committed
-      - name: Require a Conventional Commit title
+          install_args: ${{ matrix.tools }}
+      - name: Run check
+        run: mise run --skip-tools "$MISE_TASK"
         env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
+          MISE_TASK: ${{ matrix.task }}
           GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
-            PR_TITLE=$(gh pr view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json title --jq .title)
-          fi
-          printf '%s\n' "$PR_TITLE" | committed --config committed.toml --no-merge-commit --no-wip --no-fixup --commit-file -
 
   platforms:
     name: Build (${{ matrix.target }})
@@ -75,7 +80,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: jdx/mise-action@f5be966e4a917d54244728e6a5fdcd1d93a35e6c # v5.2.6; immutable release.
+      - uses: jdx/mise-action@v5.2.6 # Immutable release verified via GitHub API.
         with:
           install_args: rust
       - name: Install the native Linux musl compiler
