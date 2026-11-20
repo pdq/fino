@@ -1,0 +1,32 @@
+id = "identity-map"
+message = "Remove the identity map."
+pattern = "Enum.map(_, fn value -> value end)"
+report = "callee"
+where = { value = "variable" }
+
+[compat]
+credo = "ExSlop.Check.Refactor.IdentityMap"
+
+[[tests]]
+name = "direct and piped identity maps"
+code = '''
+Enum.map(items, fn item -> item end)
+items |> Enum.map(fn item -> item end)
+'''
+expect = [1, 2]
+
+[[tests]]
+name = "parentheses and quoted names need no extra patterns"
+code = '''
+Enum."m\x61p"(items, fn item -> ((item)) end)
+'''
+expect = [1]
+
+[[tests]]
+name = "different variables and transformed values are not identity maps"
+code = '''
+Enum.map(items, fn item -> other end)
+Enum.map(items, fn item -> transform(item) end)
+Enum.map(items, fn item -> item; log(item) end)
+'''
+expect = []

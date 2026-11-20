@@ -1,6 +1,8 @@
 //! Loads the project configuration and rule files and compiles them.
 use crate::Result;
-use crate::model::{Condition, Limit, ProjectConfig, RuleFile, RuleTest, Scope, Severity};
+use crate::model::{
+    Condition, Limit, ProjectConfig, ResultUse, RuleFile, RuleTest, Scope, Severity,
+};
 use crate::query_cache::QueryCompiler;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::collections::BTreeSet;
@@ -44,6 +46,8 @@ pub struct Rule {
     pub(crate) include: GlobSet,
     pub(crate) exclude: GlobSet,
     pub(crate) matcher: Matcher,
+    pub(crate) pattern: Option<crate::pattern::Pattern>,
+    pub(crate) result: Option<ResultUse>,
     pub(crate) query_text: Option<String>,
     pub(crate) prefilter: Option<regex::Regex>,
     pub(crate) match_length: Option<crate::text_length::CompiledTextLength>,
@@ -82,6 +86,9 @@ pub(crate) struct Group {
 pub struct Engine {
     pub rules: Vec<Rule>,
     pub(crate) groups: Vec<Group>,
+    /// All pattern rules share one candidate traversal, in both loading modes.
+    pub(crate) pattern_candidates: Option<Arc<Query>>,
+    pub(crate) pattern_routes: crate::pattern_routes::Index,
     /// Cumulative nanoseconds: one slot per rule, then parse, then the combined query pass.
     pub(crate) timings: Vec<std::sync::atomic::AtomicU64>,
     pub config_path: PathBuf,
@@ -210,7 +217,7 @@ pub(crate) fn compile_rule_with(
 }
 
 fn compile_spec(
-    spec: RuleFile,
+    mut spec: RuleFile,
     path: &Path,
     problems: &mut Problems,
     strict: bool,
@@ -231,6 +238,7 @@ fn compile_spec(
     }
     let matchers = [
         spec.query.is_some(),
+        spec.pattern.is_some(),
         !spec.branches.is_empty(),
         spec.regex.is_some(),
         spec.path_only,
@@ -239,7 +247,29 @@ fn compile_spec(
     .filter(|m| **m)
     .count();
     if matchers != 1 {
-        errors.push("set exactly one of query, branches, regex or path_only".into());
+        errors.push("set exactly one of pattern, query, branches, regex or path_only".into());
+    }
+    if spec.report.is_some() && spec.pattern.is_none() {
+        errors.push("report only applies to pattern rules".into());
+    }
+    if spec.result.is_some() && spec.pattern.is_none() {
+        errors.push("result only applies to pattern rules".into());
+    }
+    if !spec.r#where.is_empty() && spec.pattern.is_none() {
+        errors.push("where only applies to pattern rules".into());
+    }
+    if spec.pattern.is_some()
+        && (!spec.stages.is_empty() || !spec.conditions.is_empty() || !spec.comparisons.is_empty())
+    {
+        errors.push("pattern rules cannot use query stages, conditions or comparisons".into());
+    }
+    let pattern = spec.pattern.as_ref().and_then(|patterns| {
+        crate::pattern::Pattern::compile(patterns, spec.report.unwrap_or_default(), &spec.r#where)
+            .map_err(|error| errors.push(format!("pattern: {error}")))
+            .ok()
+    });
+    if pattern.is_some() {
+        spec.query = Some(crate::pattern::CANDIDATE_QUERY.into());
     }
     if !spec.branches.is_empty()
         && (!spec.stages.is_empty() || !spec.conditions.is_empty() || !spec.comparisons.is_empty())
@@ -293,8 +323,18 @@ fn compile_spec(
         });
     }
     let mut branches = Vec::new();
-    let mut query_text = spec.query.clone();
-    let matcher = if !spec.branches.is_empty() {
+    let mut query_text = if pattern.is_some() {
+        None
+    } else {
+        spec.query.clone()
+    };
+    let matcher = if pattern.is_some() {
+        // Source matching is routed through the engine's shared candidate pass.
+        Some(Matcher::Query {
+            query: None,
+            capture: None,
+        })
+    } else if !spec.branches.is_empty() {
         let mut text = String::new();
         for (index, branch) in spec.branches.iter().enumerate() {
             let mut branch_errors = Vec::new();
@@ -481,6 +521,8 @@ fn compile_spec(
         include: include?,
         exclude: exclude?,
         matcher: matcher?,
+        pattern,
+        result: spec.result,
         query_text,
         prefilter,
         match_length,
@@ -587,12 +629,30 @@ impl Engine {
         } else {
             group_queries(&rules, &mut problems, &compiler)
         };
+        let pattern_candidates = if rules.iter().any(|rule| rule.pattern.is_some()) {
+            let query = crate::pattern::Pattern::candidate_query(
+                rules.iter().filter_map(|rule| rule.pattern.as_ref()),
+            );
+            Some(compiler.compile(&query, true)?.0)
+        } else {
+            None
+        };
+        let mut pattern_routes = crate::pattern_routes::Index::default();
+        for (index, rule) in rules.iter().enumerate() {
+            if let Some(pattern) = &rule.pattern {
+                for signature in pattern.signatures() {
+                    pattern_routes.add(signature, index);
+                }
+            }
+        }
         let timings = (0..rules.len() + 2)
             .map(|_| std::sync::atomic::AtomicU64::new(0))
             .collect();
         let engine = Self {
             rules,
             groups,
+            pattern_candidates,
+            pattern_routes,
             timings,
             config_path: config_path.to_path_buf(),
             snapshot_path: dir.join(&config.snapshot_file),

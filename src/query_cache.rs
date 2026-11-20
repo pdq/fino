@@ -58,16 +58,33 @@ fn compile(text: &str) -> Result<Query> {
             return Err("query directives (#set!, #is?) are not supported".into());
         }
         for predicate in query.general_predicates(index) {
-            let valid = crate::engine::COUNT_PREDICATES.contains(&predicate.operator.as_ref())
+            let numeric = (crate::engine::COUNT_PREDICATES.contains(&predicate.operator.as_ref())
+                || matches!(
+                    predicate.operator.as_ref(),
+                    "line-span-gt?" | "list-items-gt?"
+                )
+                || crate::scan::sibling_direction(&predicate.operator).is_some())
                 && matches!(
                     predicate.args.as_ref(),
                     [tree_sitter::QueryPredicateArg::Capture(_), tree_sitter::QueryPredicateArg::String(n)]
                         if n.parse::<usize>().is_ok()
                 );
-            if !valid {
+            let literal = crate::literal::PREDICATES.contains(&predicate.operator.as_ref())
+                && matches!(
+                    predicate.args.first(),
+                    Some(tree_sitter::QueryPredicateArg::Capture(_))
+                )
+                && predicate.args.len() >= 2
+                && (predicate.operator.ends_with("any-of?") || predicate.args.len() == 2)
+                && predicate.args[1..]
+                    .iter()
+                    .all(|arg| matches!(arg, tree_sitter::QueryPredicateArg::String(_)));
+            if !numeric && !literal {
                 return Err(format!(
                     "unsupported predicate #{}; use #eq?, #match?, #any-of?, their not- forms, \
-                     or #count-eq?/#count-gt?/#count-lt? @capture N",
+                      #name-eq?/#name-any-of?, #atom-eq?/#atom-any-of?, \
+                       #count-eq?/#count-gt?/#count-lt?, #line-span-gt?, \
+                       #list-items-gt?, or #preceding-count-eq?/#following-count-eq? @capture N",
                     predicate.operator
                 ));
             }

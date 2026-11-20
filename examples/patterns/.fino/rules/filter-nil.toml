@@ -1,0 +1,44 @@
+id = "filter-nil"
+message = "Use Enum.reject(&is_nil/1) instead."
+pattern = [
+  "Enum.filter(_, fn value -> value != nil end)",
+  "Enum.filter(_, fn value -> value !== nil end)",
+  "Enum.filter(_, fn value -> nil != value end)",
+  "Enum.filter(_, fn value -> nil !== value end)",
+  "Enum.filter(_, fn value -> !is_nil(value) end)",
+  "Enum.filter(_, fn value -> not is_nil(value) end)",
+]
+report = "callee"
+where = { value = "variable" }
+
+[compat]
+credo = "ExSlop.Check.Refactor.FilterNil"
+
+[[tests]]
+name = "direct, piped and negated nil checks"
+code = '''
+Enum.filter(items, fn item -> item != nil end)
+items |> Enum.filter(fn item -> nil !== item end)
+Enum.filter(items, fn item -> not is_nil(item) end)
+items |> Enum.filter(fn item -> !is_nil(item) end)
+'''
+expect = [1, 2, 3, 4]
+
+[[tests]]
+name = "comments, quoted names and parentheses"
+code = '''
+items |> Enum."f\u0069lter"(fn item ->
+  # Keep non-nil items.
+  ((item)) != (nil)
+end)
+'''
+expect = [1]
+
+[[tests]]
+name = "different operands and additional clauses are not the same check"
+code = '''
+Enum.filter(items, fn item -> other != nil end)
+Enum.filter(items, fn item -> item != false end)
+Enum.filter(items, fn nil -> false; item -> item != nil end)
+'''
+expect = []

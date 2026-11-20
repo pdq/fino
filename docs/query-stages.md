@@ -101,6 +101,29 @@ can be `exists` or `absent`. Condition captures stay local. The referenced scope
 must contain exactly one binding; missing or repeated bindings reject the outer
 match rather than making an absence test vacuously succeed.
 
+## Decoded names and atoms
+
+Do not enumerate Elixir escape spellings in a regular expression. Use:
+
+```toml
+query = '''
+((call target: (dot right: (_) @_name) (arguments (_) @_value)) @finding
+  (#name-eq? @_name "filter")
+  (#atom-eq? @_value "false"))
+'''
+```
+
+`name-eq?` matches identifiers and static quoted remote names, including hex and
+Unicode escapes and escaped newlines. `name-any-of?` accepts several names.
+`atom-eq?` matches atoms, booleans, nil and keyword keys; `atom-any-of?` accepts
+several values. These predicates do not confuse a string with an atom.
+Interpolated values and unsupported literal forms do not match. No source is
+executed. Ordinary `eq?` still compares source text exactly.
+
+Use TOML literal strings (`'...'` or `'''...'''`) for queries to avoid a second
+layer of backslash escaping. Query-string and regex escaping still applies, so
+prefer decoded predicates for semantic names.
+
 ## Cross-stage comparisons
 
 ```toml
@@ -121,10 +144,15 @@ does not fold case, apply compatibility normalization, decode literal escapes,
 or compare ASTs. Normalization charges both captures' byte lengths against the
 per-file predicate-work budget and fails closed on exhaustion.
 
+Use `ascii-case-gt` for lexical order after ASCII lowercasing (not locale
+collation). `next-line` checks whether the right capture starts one physical
+line after the left capture ends. It does not imply syntax adjacency, and it
+does not accept text prefixes.
+
 Optional `left_prefix` and `right_prefix` strings prepend literal text to the
 respective capture before comparison. This can relate names that use different
-surface prefixes without enumerating the possible names. Prefixes work with all
-four operators and participate in NFC normalization as part of the complete
+surface prefixes without enumerating the possible names. Prefixes work with text
+operators and participate in NFC normalization as part of the complete
 text, including composition across the prefix boundary. Prefixed comparisons
 charge both prefixes and captures to the predicate-work budget; they stream the
 comparison rather than allocating concatenated strings.

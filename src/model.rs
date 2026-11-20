@@ -71,7 +71,7 @@ fn default_snapshot_file() -> String {
 
 /// One lint rule. Store each rule in `<rules_dir>/<id>.toml`.
 ///
-/// Exactly one matcher is required: `query`, `branches`, `regex` or `path_only`.
+/// Exactly one matcher is required: `pattern`, `query`, `branches`, `regex` or `path_only`.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
@@ -98,6 +98,20 @@ pub struct RuleFile {
     /// Run `fino tree FILE` to see node kinds and field names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// Experimental Elixir-shaped structural pattern, or alternative patterns.
+    /// Named variables capture expressions; underscore-prefixed variables are wildcards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<Patterns>,
+    /// Location to report for a pattern match. Only valid with `pattern`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<PatternReport>,
+    /// Only match a pattern whose original expression has this result use.
+    /// Unknown macro or scope semantics never count as discarded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<ResultUse>,
+    /// Optional syntax constraints on named pattern captures.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub r#where: std::collections::BTreeMap<String, PatternCaptureKind>,
     /// Alternative query pipelines for one logical rule. Findings at the same
     /// source range are reported once, even when several branches match.
     /// Cannot be combined with top-level query, stages, conditions or comparisons.
@@ -162,6 +176,50 @@ pub struct RuleFile {
     /// Examples run by `fino test`. Include at least one finding and one clean case.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tests: Vec<RuleTest>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Patterns {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Patterns {
+    pub fn alternatives(&self) -> &[String] {
+        match self {
+            Self::One(pattern) => std::slice::from_ref(pattern),
+            Self::Many(patterns) => patterns,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PatternReport {
+    #[default]
+    Match,
+    /// The original function-name token of a local or remote call.
+    Callee,
+    /// The original unary/binary operator token. Only valid for operator-root patterns.
+    Operator,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResultUse {
+    /// A non-returned statement in a recognized executable scope.
+    Discarded,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PatternCaptureKind {
+    /// A syntactic variable node, not proof of binding or purity.
+    /// Elixir can resolve an otherwise unbound bare identifier as a zero-arity call.
+    Variable,
+    /// A static atom, including `true`, `false`, and `nil`.
+    Atom,
 }
 
 #[derive(
@@ -360,6 +418,10 @@ pub struct BindingComparison {
 pub enum BindingOperator {
     TextEq,
     TextNotEq,
+    /// Lexical source order after ASCII lowercasing. Does not use locale collation.
+    AsciiCaseGt,
+    /// The right node starts on the physical line after the left node ends.
+    NextLine,
     // Compare captured source text after canonical Unicode composition (NFC).
     NfcEq,
     NfcNotEq,

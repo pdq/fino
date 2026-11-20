@@ -1,0 +1,5 @@
+#:schema https://raw.githubusercontent.com/pdq/fino/main/schema/config.schema.json
+include = ["**/*.ex", "**/*.exs"]
+
+[compat]
+credo_directives = true

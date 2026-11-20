@@ -1,0 +1,46 @@
+id = "case-true-false"
+message = "Use if/else for a boolean case."
+pattern = [
+  "case _ do true -> _; false -> _ end",
+  "case _ do false -> _; true -> _ end",
+]
+report = "callee"
+
+[compat]
+credo = "ExSlop.Check.Refactor.CaseTrueFalse"
+
+[[tests]]
+name = "boolean clauses in either order"
+code = '''
+case ready? do
+  true -> :ready
+  false -> :waiting
+end
+case ready? do
+  false -> :waiting
+  true -> :ready
+end
+'''
+expect = [1, 5]
+
+[[tests]]
+name = "keyword form, parentheses and quoted atoms"
+code = '''
+case ready?, do: ((:"f\u0061lse") -> :waiting; true -> :ready)
+'''
+expect = [1]
+
+[[tests]]
+name = "other patterns and extra clauses stay clean"
+code = '''
+case status do
+  :ready -> :ready
+  :waiting -> :waiting
+end
+case status do
+  true -> :ready
+  false -> :waiting
+  nil -> :unknown
+end
+'''
+expect = []
