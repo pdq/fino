@@ -259,6 +259,7 @@ struct QueryWork {
     active_time: Duration,
     per_query_time: Duration,
     child_counts: HashMap<usize, usize>,
+    siblings: crate::scan::SiblingPositions,
 }
 
 impl Default for QueryWork {
@@ -270,6 +271,7 @@ impl Default for QueryWork {
             active_time: FILE_QUERY_TIME,
             per_query_time: QUERY_DEADLINE,
             child_counts: HashMap::new(),
+            siblings: crate::scan::SiblingPositions::default(),
         }
     }
 }
@@ -341,6 +343,19 @@ impl QueryWork {
                         self.predicate_work(1)?;
                         progress.check()
                     })? {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                if let Some(preceding) = crate::scan::sibling_direction(&predicate.operator) {
+                    let remaining = &mut self.predicates;
+                    let count = self.siblings.count(capture.node, preceding, || {
+                        *remaining = remaining
+                            .checked_sub(1)
+                            .ok_or("auxiliary query predicate work limit exceeded")?;
+                        progress.check()
+                    })?;
+                    if count != Some(n) {
                         return Ok(false);
                     }
                     continue;

@@ -676,6 +676,46 @@ fn pattern_validation_rejects_unsupported_or_mixed_syntax_instead_of_guessing() 
 }
 
 #[test]
+fn sibling_positions_ignore_comments_but_not_real_arguments() {
+    let rules = [
+        "id = 'first'\nmessage = 'm'\nquery = '((arguments (identifier) @finding) (#preceding-count-eq? @finding 0))'\n",
+        r#"
+id = "last"
+message = "m"
+query = "(arguments (identifier) @finding)"
+[[conditions]]
+capture = "finding"
+relation = "root"
+query = '((identifier) @edge (#following-count-eq? @edge 0))'
+expect = "exists"
+"#,
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "f(\n # before\n first,\n middle,\n last\n # after\n)\n";
+    for engine in [&strict, &fast] {
+        let found = lint(engine, "a.ex", source).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|hit| (hit.rule.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            [("first", 3), ("last", 5)]
+        );
+        let wide = format!("f(first,\n{}last)\n", "middle, # gap\n".repeat(2048));
+        let found = lint(engine, "a.ex", &wide).unwrap();
+        assert_eq!(
+            found
+                .iter()
+                .map(|hit| (hit.rule.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            [("first", 1), ("last", 2050)]
+        );
+    }
+}
+
+#[test]
 fn source_order_comparisons_check_adjacent_lines_and_fold_ascii_case() {
     let rule = r#"
 id = "order"

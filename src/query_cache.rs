@@ -62,7 +62,8 @@ fn compile(text: &str) -> Result<Query> {
                 || matches!(
                     predicate.operator.as_ref(),
                     "line-span-gt?" | "list-items-gt?"
-                ))
+                )
+                || crate::scan::sibling_direction(&predicate.operator).is_some())
                 && matches!(
                     predicate.args.as_ref(),
                     [tree_sitter::QueryPredicateArg::Capture(_), tree_sitter::QueryPredicateArg::String(n)]
@@ -83,7 +84,7 @@ fn compile(text: &str) -> Result<Query> {
                     "unsupported predicate #{}; use #eq?, #match?, #any-of?, their not- forms, \
                       #name-eq?/#name-any-of?, #atom-eq?/#atom-any-of?, \
                        #count-eq?/#count-gt?/#count-lt?, #line-span-gt?, \
-                       or #list-items-gt? @capture N",
+                       #list-items-gt?, or #preceding-count-eq?/#following-count-eq? @capture N",
                     predicate.operator
                 ));
             }

@@ -79,6 +79,12 @@ works in outer queries, stages, and conditions.
 `(#list-items-gt? @node N)` counts immediate items of a `list` or `keywords`
 node. Trailing keyword pairs count separately, comments do not count, and
 nested lists count as single items. It stops once the threshold is exceeded.
+`(#preceding-count-eq? @node N)` and `(#following-count-eq? @node N)`
+compare the number of named siblings in that direction, ignoring comments.
+The captured node must be named; an anonymous punctuation token cannot match.
+The engine indexes a sibling group lazily once per file and evaluation path,
+with a work limit. Use these predicates for edge checks, such as the first or
+last item of an argument list.
 Use [scoped matching](query-stages.md) for per-capture `conditions`, ordered
 root-rebased `stages`, and source-text `comparisons`. These are not semantic
 analysis or arbitrary AST normalization. When a logical check needs different

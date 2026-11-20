@@ -263,6 +263,53 @@ pub(crate) fn line_span(node: tree_sitter::Node) -> usize {
     node.end_position().row - node.start_position().row
 }
 
+pub(crate) fn sibling_direction(operator: &str) -> Option<bool> {
+    match operator {
+        "preceding-count-eq?" => Some(true),
+        "following-count-eq?" => Some(false),
+        _ => None,
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct SiblingPositions(HashMap<usize, (usize, usize)>);
+
+impl SiblingPositions {
+    pub(crate) fn count(
+        &mut self,
+        node: tree_sitter::Node,
+        preceding: bool,
+        mut charge: impl FnMut() -> Result<()>,
+    ) -> Result<Option<usize>> {
+        if !node.is_named() {
+            return Ok(None);
+        }
+        if !self.0.contains_key(&node.id()) {
+            let Some(parent) = node.parent() else {
+                return Ok(Some(0));
+            };
+            let mut children = Vec::new();
+            let mut count = 0;
+            let mut walk = parent.walk();
+            for child in parent.named_children(&mut walk) {
+                charge()?;
+                let named = usize::from(child.kind() != "comment");
+                children.push((child.id(), count, named));
+                count += named;
+            }
+            self.0.extend(
+                children
+                    .into_iter()
+                    .map(|(id, before, named)| (id, (before, count - before - named))),
+            );
+        }
+        Ok(self
+            .0
+            .get(&node.id())
+            .map(|&(before, after)| if preceding { before } else { after }))
+    }
+}
+
 /// Count logical elements of a list or keyword list, stopping at the threshold.
 /// The grammar groups trailing keyword pairs under one `keywords` node.
 pub(crate) fn list_items_gt(
@@ -302,51 +349,58 @@ pub(crate) fn list_items_gt(
 }
 
 /// Tree-sitter evaluates text predicates; Fino handles syntax and decoded names.
-pub(crate) fn predicates_hold(
+fn predicates_hold(
     query: &tree_sitter::Query,
     found: &tree_sitter::QueryMatch,
     text: &[u8],
-) -> bool {
+    siblings: &mut SiblingPositions,
+    work: &mut crate::pattern::Work,
+) -> Result<bool> {
     use tree_sitter::QueryPredicateArg::{Capture, String as Text};
-    query
-        .general_predicates(found.pattern_index)
-        .iter()
-        .all(|predicate| {
-            if crate::literal::PREDICATES.contains(&predicate.operator.as_ref()) {
-                return crate::literal::predicate(predicate, found, text, |_| Ok(()))
-                    .expect("ordinary predicate accounting is infallible");
+    for predicate in query.general_predicates(found.pattern_index) {
+        if crate::literal::PREDICATES.contains(&predicate.operator.as_ref()) {
+            if !crate::literal::predicate(predicate, found, text, |_| Ok(()))? {
+                return Ok(false);
             }
-            let (Some(Capture(capture)), Some(Text(n))) =
-                (predicate.args.first(), predicate.args.get(1))
-            else {
-                return false;
+            continue;
+        }
+        let (Some(Capture(capture)), Some(Text(n))) =
+            (predicate.args.first(), predicate.args.get(1))
+        else {
+            return Ok(false);
+        };
+        let n: usize = n.parse().unwrap_or(usize::MAX);
+        for c in found.captures.iter().filter(|c| c.index == *capture) {
+            let operator = predicate.operator.as_ref();
+            let passes = if let Some(preceding) = sibling_direction(operator) {
+                siblings.count(c.node, preceding, || {
+                    work.charge(1)
+                        .map_err(|_| "sibling predicate work limit exceeded".into())
+                })? == Some(n)
+            } else if operator == "line-span-gt?" {
+                line_span(c.node) > n
+            } else if operator == "list-items-gt?" {
+                list_items_gt(c.node, n, || Ok(()))?
+            } else {
+                let mut walk = c.node.walk();
+                let count = c
+                    .node
+                    .named_children(&mut walk)
+                    .filter(|child| child.kind() != "comment")
+                    .count();
+                match operator {
+                    "count-eq?" => count == n,
+                    "count-gt?" => count > n,
+                    "count-lt?" => count < n,
+                    _ => false,
+                }
             };
-            let n: usize = n.parse().unwrap_or(usize::MAX);
-            found
-                .captures
-                .iter()
-                .filter(|c| c.index == *capture)
-                .all(|c| {
-                    if predicate.operator.as_ref() == "line-span-gt?" {
-                        return line_span(c.node) > n;
-                    }
-                    if predicate.operator.as_ref() == "list-items-gt?" {
-                        return list_items_gt(c.node, n, || Ok(())).expect("infallible count");
-                    }
-                    let mut walk = c.node.walk();
-                    let count = c
-                        .node
-                        .named_children(&mut walk)
-                        .filter(|child| child.kind() != "comment")
-                        .count();
-                    match predicate.operator.as_ref() {
-                        "count-eq?" => count == n,
-                        "count-gt?" => count > n,
-                        "count-lt?" => count < n,
-                        _ => false,
-                    }
-                })
-        })
+            if !passes {
+                return Ok(false);
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn record(engine: &Engine, slot: usize, started: Instant) {
@@ -394,6 +448,8 @@ struct FileCtx<'text, 'tree> {
     masked: HashMap<String, String>,
     conditions: crate::query_conditions::Evaluator<'tree>,
     pattern_work: crate::pattern::Work,
+    siblings: SiblingPositions,
+    sibling_work: crate::pattern::Work,
 }
 
 impl FileCtx<'_, '_> {
@@ -424,7 +480,13 @@ impl FileCtx<'_, '_> {
                 let mut matches =
                     cursor.matches(query, self.tree.root_node(), self.text.as_bytes());
                 while let Some(found) = matches.next() {
-                    if !predicates_hold(query, found, self.text.as_bytes()) {
+                    if !predicates_hold(
+                        query,
+                        found,
+                        self.text.as_bytes(),
+                        &mut self.siblings,
+                        &mut self.sibling_work,
+                    )? {
                         continue;
                     }
                     for capture in found.captures.iter().filter(|c| named[c.index as usize]) {
@@ -449,7 +511,7 @@ impl FileCtx<'_, '_> {
 fn query_lines(
     cursor: &mut QueryCursor,
     query: &tree_sitter::Query,
-    ctx: &FileCtx,
+    ctx: &mut FileCtx,
 ) -> Result<BTreeSet<usize>> {
     let names = query.capture_names();
     let named: Vec<bool> = names.iter().map(|n| !n.starts_with('_')).collect();
@@ -457,7 +519,13 @@ fn query_lines(
     let mut lines = BTreeSet::new();
     let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
     while let Some(found) = matches.next() {
-        if !predicates_hold(query, found, ctx.text.as_bytes()) {
+        if !predicates_hold(
+            query,
+            found,
+            ctx.text.as_bytes(),
+            &mut ctx.siblings,
+            &mut ctx.sibling_work,
+        )? {
             continue;
         }
         for capture in found.captures {
@@ -474,7 +542,7 @@ fn query_lines(
 fn capture_ranges(
     cursor: &mut QueryCursor,
     query: &tree_sitter::Query,
-    ctx: &FileCtx,
+    ctx: &mut FileCtx,
 ) -> Result<Vec<std::ops::Range<usize>>> {
     let named: Vec<bool> = query
         .capture_names()
@@ -484,7 +552,13 @@ fn capture_ranges(
     let mut ranges = Vec::new();
     let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
     while let Some(found) = matches.next() {
-        if !predicates_hold(query, found, ctx.text.as_bytes()) {
+        if !predicates_hold(
+            query,
+            found,
+            ctx.text.as_bytes(),
+            &mut ctx.siblings,
+            &mut ctx.sibling_work,
+        )? {
             continue;
         }
         for capture in found.captures.iter().filter(|c| named[c.index as usize]) {
@@ -499,7 +573,7 @@ fn capture_ranges(
 fn file_condition(
     cursor: &mut QueryCursor,
     cond: &Cond,
-    ctx: &FileCtx,
+    ctx: &mut FileCtx,
 ) -> std::result::Result<bool, String> {
     if let Some(regex) = &cond.regex
         && regex.is_match(ctx.text).map_err(|e| e.to_string())?
@@ -509,7 +583,13 @@ fn file_condition(
     if let Some(query) = &cond.query {
         let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
         while let Some(found) = matches.next() {
-            if predicates_hold(query, found, ctx.text.as_bytes()) {
+            if predicates_hold(
+                query,
+                found,
+                ctx.text.as_bytes(),
+                &mut ctx.siblings,
+                &mut ctx.sibling_work,
+            )? {
                 // A valid witness establishes existence; later matches cannot change it.
                 // Still reject any overflow encountered while finding that witness.
                 drop(matches);
@@ -603,7 +683,13 @@ fn rule_hits(
             {
                 let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
                 while let Some(found) = matches.next() {
-                    if !predicates_hold(query, found, ctx.text.as_bytes()) {
+                    if !predicates_hold(
+                        query,
+                        found,
+                        ctx.text.as_bytes(),
+                        &mut ctx.siblings,
+                        &mut ctx.sibling_work,
+                    )? {
                         continue;
                     }
                     let branch = rule.branch_at(query.start_byte_for_pattern(found.pattern_index));
@@ -815,6 +901,8 @@ pub(crate) fn source(
         masked: HashMap::new(),
         conditions: crate::query_conditions::Evaluator::new(cursor.match_limit()),
         pattern_work: crate::pattern::Work::default(),
+        siblings: SiblingPositions::default(),
+        sibling_work: crate::pattern::Work::default(),
     };
     let mut findings = Vec::new();
     let rules: Vec<(Option<usize>, &Rule)> = match only {
@@ -848,12 +936,12 @@ pub(crate) fn source(
             continue;
         }
         if let Some(cond) = &rule.if_file
-            && !file_condition(cursor, cond, &ctx).map_err(fail)?
+            && !file_condition(cursor, cond, &mut ctx).map_err(fail)?
         {
             continue;
         }
         if let Some(cond) = &rule.unless_file
-            && file_condition(cursor, cond, &ctx).map_err(fail)?
+            && file_condition(cursor, cond, &mut ctx).map_err(fail)?
         {
             continue;
         }
@@ -884,7 +972,15 @@ pub(crate) fn source(
                 let Some(hits) = shared.get_mut(&group.pattern_rule[found.pattern_index]) else {
                     continue;
                 };
-                if !predicates_hold(query, found, text.as_bytes()) {
+                if !predicates_hold(
+                    query,
+                    found,
+                    text.as_bytes(),
+                    &mut ctx.siblings,
+                    &mut ctx.sibling_work,
+                )
+                .map_err(fail)?
+                {
                     continue;
                 }
                 let rule = &engine.rules[group.pattern_rule[found.pattern_index]];
