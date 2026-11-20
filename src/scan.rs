@@ -14,6 +14,8 @@ use std::time::Instant;
 use tree_sitter::{ParseOptions, ParseState, Parser, QueryCursor, StreamingIterator, Tree};
 
 const MAX_FINDINGS: usize = 100_000;
+// Bound pattern buffers before filtering, suppression and final finding limits.
+const MAX_INTERMEDIATE_PATTERN_HITS: usize = 100_000;
 const PARSE_BUDGET: Duration = Duration::from_secs(10);
 const DEFAULT_LINK_LIMIT: u32 = 8;
 const RETRY_LINK_LIMIT: u32 = 64;
@@ -256,13 +258,64 @@ fn diagnostic(file: &str, line: usize, column: usize, message: String) -> Diagno
     }
 }
 
-/// Evaluate the engine's #count-* predicates (tree-sitter evaluates text predicates).
-pub(crate) fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::QueryMatch) -> bool {
+/// Physical line breaks spanned by a syntax node; no source scan is needed.
+pub(crate) fn line_span(node: tree_sitter::Node) -> usize {
+    node.end_position().row - node.start_position().row
+}
+
+/// Count logical elements of a list or keyword list, stopping at the threshold.
+/// The grammar groups trailing keyword pairs under one `keywords` node.
+pub(crate) fn list_items_gt(
+    node: tree_sitter::Node,
+    mut remaining: usize,
+    mut charge: impl FnMut() -> Result<()>,
+) -> Result<bool> {
+    if !matches!(node.kind(), "list" | "keywords") {
+        return Ok(false);
+    }
+    let mut walk = node.walk();
+    for child in node.named_children(&mut walk) {
+        charge()?;
+        match child.kind() {
+            "comment" => {}
+            "keywords" if node.kind() == "list" => {
+                let mut inner = child.walk();
+                for pair in child.named_children(&mut inner) {
+                    charge()?;
+                    if pair.kind() == "pair" {
+                        let Some(next) = remaining.checked_sub(1) else {
+                            return Ok(true);
+                        };
+                        remaining = next;
+                    }
+                }
+            }
+            _ => {
+                let Some(next) = remaining.checked_sub(1) else {
+                    return Ok(true);
+                };
+                remaining = next;
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Tree-sitter evaluates text predicates; Fino handles syntax and decoded names.
+pub(crate) fn predicates_hold(
+    query: &tree_sitter::Query,
+    found: &tree_sitter::QueryMatch,
+    text: &[u8],
+) -> bool {
     use tree_sitter::QueryPredicateArg::{Capture, String as Text};
     query
         .general_predicates(found.pattern_index)
         .iter()
         .all(|predicate| {
+            if crate::literal::PREDICATES.contains(&predicate.operator.as_ref()) {
+                return crate::literal::predicate(predicate, found, text, |_| Ok(()))
+                    .expect("ordinary predicate accounting is infallible");
+            }
             let (Some(Capture(capture)), Some(Text(n))) =
                 (predicate.args.first(), predicate.args.get(1))
             else {
@@ -274,6 +327,12 @@ pub(crate) fn predicates_hold(query: &tree_sitter::Query, found: &tree_sitter::Q
                 .iter()
                 .filter(|c| c.index == *capture)
                 .all(|c| {
+                    if predicate.operator.as_ref() == "line-span-gt?" {
+                        return line_span(c.node) > n;
+                    }
+                    if predicate.operator.as_ref() == "list-items-gt?" {
+                        return list_items_gt(c.node, n, || Ok(())).expect("infallible count");
+                    }
                     let mut walk = c.node.walk();
                     let count = c
                         .node
@@ -334,6 +393,7 @@ struct FileCtx<'text, 'tree> {
     regions: Option<Regions>,
     masked: HashMap<String, String>,
     conditions: crate::query_conditions::Evaluator<'tree>,
+    pattern_work: crate::pattern::Work,
 }
 
 impl FileCtx<'_, '_> {
@@ -364,7 +424,7 @@ impl FileCtx<'_, '_> {
                 let mut matches =
                     cursor.matches(query, self.tree.root_node(), self.text.as_bytes());
                 while let Some(found) = matches.next() {
-                    if !predicates_hold(query, found) {
+                    if !predicates_hold(query, found, self.text.as_bytes()) {
                         continue;
                     }
                     for capture in found.captures.iter().filter(|c| named[c.index as usize]) {
@@ -397,7 +457,7 @@ fn query_lines(
     let mut lines = BTreeSet::new();
     let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
     while let Some(found) = matches.next() {
-        if !predicates_hold(query, found) {
+        if !predicates_hold(query, found, ctx.text.as_bytes()) {
             continue;
         }
         for capture in found.captures {
@@ -424,7 +484,7 @@ fn capture_ranges(
     let mut ranges = Vec::new();
     let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
     while let Some(found) = matches.next() {
-        if !predicates_hold(query, found) {
+        if !predicates_hold(query, found, ctx.text.as_bytes()) {
             continue;
         }
         for capture in found.captures.iter().filter(|c| named[c.index as usize]) {
@@ -449,7 +509,7 @@ fn file_condition(
     if let Some(query) = &cond.query {
         let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
         while let Some(found) = matches.next() {
-            if predicates_hold(query, found) {
+            if predicates_hold(query, found, ctx.text.as_bytes()) {
                 // A valid witness establishes existence; later matches cannot change it.
                 // Still reject any overflow encountered while finding that witness.
                 drop(matches);
@@ -543,7 +603,7 @@ fn rule_hits(
             {
                 let mut matches = cursor.matches(query, ctx.tree.root_node(), ctx.text.as_bytes());
                 while let Some(found) = matches.next() {
-                    if !predicates_hold(query, found) {
+                    if !predicates_hold(query, found, ctx.text.as_bytes()) {
                         continue;
                     }
                     let branch = rule.branch_at(query.start_byte_for_pattern(found.pattern_index));
@@ -754,10 +814,18 @@ pub(crate) fn source(
         regions: None,
         masked: HashMap::new(),
         conditions: crate::query_conditions::Evaluator::new(cursor.match_limit()),
+        pattern_work: crate::pattern::Work::default(),
     };
     let mut findings = Vec::new();
     let rules: Vec<(Option<usize>, &Rule)> = match only {
-        Some(rule) => vec![(None, rule)],
+        Some(rule) => {
+            let index = engine
+                .rules
+                .iter()
+                .position(|loaded| std::ptr::eq(loaded, rule))
+                .ok_or_else(|| fail("selected rule must belong to the loaded engine".into()))?;
+            vec![(Some(index), rule)]
+        }
         None => engine
             .rules
             .iter()
@@ -794,13 +862,15 @@ pub(crate) fn source(
     // One traversal per query group for every active query rule (fast loads only).
     let mut shared: HashMap<usize, Vec<Hit>> = HashMap::new();
     if !engine.groups.is_empty()
-        && active
-            .iter()
-            .any(|(i, r)| i.is_some() && matches!(r.matcher, Matcher::Query { .. }))
+        && active.iter().any(|(i, r)| {
+            i.is_some() && r.pattern.is_none() && matches!(r.matcher, Matcher::Query { .. })
+        })
     {
         let started = Instant::now();
         for (i, r) in &active {
-            if let (Some(i), Matcher::Query { .. }) = (i, &r.matcher) {
+            if let (Some(i), Matcher::Query { .. }) = (i, &r.matcher)
+                && r.pattern.is_none()
+            {
                 shared.insert(*i, Vec::new());
             }
         }
@@ -814,7 +884,7 @@ pub(crate) fn source(
                 let Some(hits) = shared.get_mut(&group.pattern_rule[found.pattern_index]) else {
                     continue;
                 };
-                if !predicates_hold(query, found) {
+                if !predicates_hold(query, found, text.as_bytes()) {
                     continue;
                 }
                 let rule = &engine.rules[group.pattern_rule[found.pattern_index]];
@@ -835,14 +905,113 @@ pub(crate) fn source(
         }
         record(engine, slots + 1, started);
     }
-    for (index, rule) in active {
+    let mut pattern_hits: Vec<Option<Vec<Hit>>> = if engine.pattern_candidates.is_some() {
+        active
+            .iter()
+            .map(|(_, rule)| rule.pattern.as_ref().map(|_| Vec::new()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if pattern_hits.iter().any(Option::is_some) {
+        let mut intermediate_hits = 0;
+        let mut active_positions = vec![None; engine.rules.len()];
+        for (position, (index, _)) in active.iter().enumerate() {
+            if let Some(index) = index {
+                active_positions[*index] = Some(position);
+            }
+        }
+        let started = Instant::now();
+        let query = engine
+            .pattern_candidates
+            .as_ref()
+            .ok_or_else(|| fail("pattern candidate query missing".into()))?;
+        let capture = query
+            .capture_index_for_name("finding")
+            .expect("static candidate capture");
+        let mut matches = cursor.matches(query, ctx.tree.root_node(), text.as_bytes());
+        while let Some(found) = matches.next() {
+            for item in found.captures.iter().filter(|item| item.index == capture) {
+                let Some(candidate) = crate::pattern::Pattern::candidate(
+                    item.node,
+                    text.as_bytes(),
+                    &mut ctx.pattern_work,
+                )
+                .map_err(fail)?
+                else {
+                    continue;
+                };
+                let routes = engine.pattern_routes.candidates(candidate.signature());
+                // Classify a matching source expression once, even if several
+                // rules constrain its result use. No result analysis otherwise.
+                let mut usage = None;
+                for rule_index in routes.indices() {
+                    // Excluded rules still cost one dispatch visit. Account
+                    // for that work before the active-file filter.
+                    ctx.pattern_work.charge(1).map_err(fail)?;
+                    let Some(position) = active_positions[rule_index] else {
+                        continue;
+                    };
+                    let (index, rule) = &active[position];
+                    let started = Instant::now();
+                    let pattern = rule.pattern.as_ref().expect("routed pattern");
+                    if let Some(span) = pattern
+                        .finding_candidate(&candidate, text.as_bytes(), &mut ctx.pattern_work)
+                        .map_err(fail)?
+                    {
+                        if rule.result == Some(crate::model::ResultUse::Discarded) {
+                            if usage.is_none() {
+                                usage = Some(
+                                    crate::result_usage::classify(
+                                        candidate.node,
+                                        text.as_bytes(),
+                                        &mut ctx.pattern_work,
+                                    )
+                                    .map_err(fail)?,
+                                );
+                            }
+                            if usage != Some(crate::result_usage::Usage::Discarded) {
+                                record(engine, rule_index, started);
+                                continue;
+                            }
+                        }
+                        if intermediate_hits == MAX_INTERMEDIATE_PATTERN_HITS {
+                            return Err(fail("intermediate pattern hit limit exceeded".into()));
+                        }
+                        intermediate_hits += 1;
+                        let line = ctx.lines.index(span.start);
+                        pattern_hits
+                            .get_mut(position)
+                            .and_then(Option::as_mut)
+                            .expect("active pattern")
+                            .push(Hit {
+                                line,
+                                column: span.start - ctx.lines.starts[line],
+                                start: span.start,
+                                end: span.end,
+                            });
+                    }
+                    if let Some(index) = index {
+                        record(engine, *index, started);
+                    }
+                }
+            }
+        }
+        drop(matches);
+        check_query_limit(cursor).map_err(fail)?;
+        record(engine, slots + 1, started);
+    }
+    for (position, (index, rule)) in active.into_iter().enumerate() {
         let credo = rule.credo.as_deref();
         let started = Instant::now();
         let hits = rule_hits(
             rule,
             cursor,
             &mut ctx,
-            index.and_then(|i| shared.remove(&i)),
+            pattern_hits
+                .get_mut(position)
+                .and_then(Option::take)
+                .or_else(|| index.and_then(|i| shared.remove(&i))),
         )
         .map_err(fail)?;
         if let Some(index) = index {

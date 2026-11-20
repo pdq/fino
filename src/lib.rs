@@ -2,10 +2,14 @@
 //! No application code is evaluated.
 mod directives;
 mod engine;
+mod literal;
 mod mask;
 pub mod model;
+mod pattern;
+mod pattern_routes;
 mod query_cache;
 mod query_conditions;
+mod result_usage;
 mod scan;
 mod snapshot;
 mod testing;

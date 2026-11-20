@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "RuleFile",
-  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `query`, `branches`, `regex` or `path_only`.",
+  "description": "One lint rule. Store each rule in `<rules_dir>/<id>.toml`.\n\nExactly one matcher is required: `pattern`, `query`, `branches`, `regex` or `path_only`.",
   "type": "object",
   "properties": {
     "branches": {
@@ -125,6 +125,17 @@
       "description": "Report one finding at line 1 of every selected file. Use with `include`/`exclude`.",
       "type": "boolean"
     },
+    "pattern": {
+      "description": "Experimental Elixir-shaped structural pattern, or alternative patterns.\nNamed variables capture expressions; underscore-prefixed variables are wildcards.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Patterns"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "prefilter": {
       "description": "For `regex`: an optional fast regex (no look-around) checked on the raw, unmasked line\n(`scope = \"line\"`) or file before masking and `regex` run. Purely an optimization:\nit must match the raw text whenever `regex` matches the masked text.",
       "type": [
@@ -144,6 +155,28 @@
       "type": [
         "string",
         "null"
+      ]
+    },
+    "report": {
+      "description": "Location to report for a pattern match. Only valid with `pattern`.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PatternReport"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result": {
+      "description": "Only match a pattern whose original expression has this result use.\nUnknown macro or scope semantics never count as discarded.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ResultUse"
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "scope": {
@@ -206,6 +239,13 @@
           "type": "null"
         }
       ]
+    },
+    "where": {
+      "description": "Optional syntax constraints on named pattern captures.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/PatternCaptureKind"
+      }
     }
   },
   "additionalProperties": false,
@@ -245,12 +285,26 @@
       ]
     },
     "BindingOperator": {
-      "type": "string",
-      "enum": [
-        "text-eq",
-        "text-not-eq",
-        "nfc-eq",
-        "nfc-not-eq"
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "text-eq",
+            "text-not-eq",
+            "nfc-eq",
+            "nfc-not-eq"
+          ]
+        },
+        {
+          "description": "Lexical source order after ASCII lowercasing. Does not use locale collation.",
+          "type": "string",
+          "const": "ascii-case-gt"
+        },
+        {
+          "description": "The right node starts on the physical line after the left node ends.",
+          "type": "string",
+          "const": "next-line"
+        }
       ]
     },
     "Condition": {
@@ -373,6 +427,53 @@
       "additionalProperties": false,
       "required": [
         "regex"
+      ]
+    },
+    "PatternCaptureKind": {
+      "oneOf": [
+        {
+          "description": "A syntactic variable node, not proof of binding or purity.\nElixir can resolve an otherwise unbound bare identifier as a zero-arity call.",
+          "type": "string",
+          "const": "variable"
+        },
+        {
+          "description": "A static atom, including `true`, `false`, and `nil`.",
+          "type": "string",
+          "const": "atom"
+        }
+      ]
+    },
+    "PatternReport": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "match"
+          ]
+        },
+        {
+          "description": "The original function-name token of a local or remote call.",
+          "type": "string",
+          "const": "callee"
+        },
+        {
+          "description": "The original unary/binary operator token. Only valid for operator-root patterns.",
+          "type": "string",
+          "const": "operator"
+        }
+      ]
+    },
+    "Patterns": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       ]
     },
     "QueryBranch": {
@@ -509,6 +610,15 @@
       "required": [
         "from",
         "query"
+      ]
+    },
+    "ResultUse": {
+      "oneOf": [
+        {
+          "description": "A non-returned statement in a recognized executable scope.",
+          "type": "string",
+          "const": "discarded"
+        }
       ]
     },
     "RuleCompat": {

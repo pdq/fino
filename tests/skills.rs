@@ -52,8 +52,11 @@ fn skills_are_discoverable_and_embedded_without_loading_project_config() {
 
 #[test]
 fn documented_example_policy_validates_and_all_embedded_examples_pass() {
-    for command in ["validate", "test"] {
-        let output = fino(&[command, "--root", "examples/rules"]);
+    for (root, command) in ["examples/rules", "examples/patterns"]
+        .into_iter()
+        .flat_map(|root| ["validate", "test"].map(|command| (root, command)))
+    {
+        let output = fino(&[command, "--root", root]);
         assert!(output.status.success(), "{output:?}");
         assert!(output.stderr.is_empty(), "{output:?}");
     }

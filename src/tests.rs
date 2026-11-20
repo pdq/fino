@@ -465,6 +465,549 @@ mask = [
 }
 
 #[test]
+fn elixir_patterns_normalize_pipes_literals_and_repeated_captures_in_both_modes() {
+    let rule = include_str!("../examples/patterns/.fino/rules/identity-map.toml");
+    let (root, strict) = project("", &[rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = r##"Enum.map(items, fn x -> x end)
+items |> Enum.map(fn x -> (x) end)
+Enum."m\x61p"(items, fn x -> x end)
+Enum.map(items, fn x -> other end)
+Enum.map(items, fn x -> callback.(x) end)
+Enum.map(items, fn x -> "#{x}" end)
+items |> Enum.map(fn x -> transform(x) end)
+Enum.map(items, fn x -> café end)
+Enum.map(items, fn café -> café end)
+Enum.map(items, fn x -> x end); Enum.map(items, fn x -> x end)
+"##;
+    let expected = [1, 2, 3, 9, 10, 10];
+    for engine in [&strict, &fast] {
+        let found = lint(engine, "a.ex", source).unwrap();
+        assert_eq!(found.iter().map(|f| f.line).collect::<Vec<_>>(), expected);
+        for finding in &found {
+            let token = &source[finding.start_byte..finding.end_byte];
+            assert!(matches!(token, "map" | "\"m\\x61p\""), "{token}");
+        }
+    }
+    assert_eq!(lint(&strict, "a.ex", source), lint(&fast, "a.ex", source));
+}
+
+#[test]
+fn patterns_keep_suppression_scope_filters_and_exact_range_deduplication() {
+    let rule = r#"id = "identity"
+message = "m"
+pattern = ['Enum.map(_, fn x -> x end)', 'Enum.map(_, fn x -> x end)']
+report = "callee"
+include = ['lib/**']
+[compat]
+credo = 'Legacy.Identity'
+"#;
+    let (root, strict) = project("[compat]\ncredo_directives = true\n", &[rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "# fino:disable-next-line identity\nEnum.map(items, fn x -> x end)\n\
+# credo:disable-for-next-line Legacy.Identity\nEnum.map(items, fn x -> x end)\n\
+Enum.map(items, fn x -> x end); Enum.map(items, fn x -> x end)\n";
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "lib/a.ex", source), [5, 5]);
+        assert!(lines(engine, "other/a.ex", source).is_empty());
+    }
+}
+
+#[test]
+fn pattern_clause_counts_use_generated_stress_inputs_not_giant_rule_examples() {
+    let rule = include_str!("../examples/patterns/.fino/rules/case-true-false.toml");
+    let (root, strict) = project("", &[rule]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    for count in [3, 256, 1024] {
+        let extras = (2..count)
+            .map(|n| format!("pattern{n} -> :other\n"))
+            .collect::<String>();
+        let source = format!("case value do\ntrue -> :a\nfalse -> :b\n{extras}end");
+        for engine in [&strict, &fast] {
+            assert!(lines(engine, "a.ex", &source).is_empty(), "{count} clauses");
+        }
+    }
+    // The readable two-clause example remains a positive control.
+    assert_eq!(
+        lines(&strict, "a.ex", "case value do true -> :a; false -> :b end"),
+        [1]
+    );
+}
+
+#[test]
+fn control_flow_blocks_normalize_without_inspecting_wildcard_bodies() {
+    let rules = [
+        "id = 'single'\nmessage = 'm'\npattern = 'with _ <- _ do _ else ... end'\n",
+        "id = 'passthrough'\nmessage = 'm'\npattern = 'with ... do _ else error -> error end'\nwhere = {error = 'variable'}\n",
+        "id = 'unless'\nmessage = 'm'\npattern = 'unless _ do _ else _ end'\n",
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "with {:ok, x} <- read() do x else :error -> :no; other -> other end\n\
+with {:ok, x} <- read(), {:ok, y} <- read() do y else err -> err end\n\
+with {:ok, x} <- read() do x end\n\
+unless ready? do :wait else :go end\n\
+unless ready?, do: :wait, else: :go\n\
+unless ready?, do: :wait\n";
+    for engine in [&strict, &fast] {
+        let mut found: Vec<_> = lint(engine, "a.ex", source)
+            .unwrap()
+            .into_iter()
+            .map(|f| (f.rule, f.line))
+            .collect();
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            [
+                ("passthrough".into(), 2),
+                ("single".into(), 1),
+                ("unless".into(), 4),
+                ("unless".into(), 5)
+            ]
+        );
+    }
+    assert_eq!(lint(&strict, "a.ex", source), lint(&fast, "a.ex", source));
+}
+
+#[test]
+fn operator_roots_and_empty_map_literals_use_shared_typed_candidates() {
+    let rules = [
+        "id = 'zero'\nmessage = 'm'\npattern = '_ * 0'\nreport = 'operator'\n",
+        "id = 'negative'\nmessage = 'm'\npattern = '!_'\nreport = 'operator'\n",
+        "id = 'map'\nmessage = 'm'\npattern = 'Enum.into(_, %{})'\nreport = 'callee'\n",
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "count * 0\ncount * 0x0\ncount * (0)\ncount * 1\n!ready\nnot ready\n\
+Enum.into(items, %{})\nitems |> Enum.into(%{})\nEnum.into(items, %{existing: true})\n";
+    for engine in [&strict, &fast] {
+        let found = lint(engine, "a.ex", source).unwrap();
+        let mut actual: Vec<_> = found
+            .iter()
+            .map(|f| (f.rule.as_str(), f.line, &source[f.start_byte..f.end_byte]))
+            .collect();
+        actual.sort_unstable();
+        assert_eq!(
+            actual,
+            [
+                ("map", 7, "into"),
+                ("map", 8, "into"),
+                ("negative", 5, "!"),
+                ("zero", 1, "*"),
+                ("zero", 2, "*"),
+                ("zero", 3, "*")
+            ]
+        );
+    }
+    assert_eq!(lint(&strict, "a.ex", source), lint(&fast, "a.ex", source));
+}
+
+#[test]
+fn sequence_ellipsis_matches_fixed_edges_without_backtracking() {
+    let rules = [
+        "id = 'any'\nmessage = 'm'\npattern = 'any(...)'\n",
+        "id = 'edges'\nmessage = 'm'\npattern = 'edges(value, ..., value)'\n",
+        "id = 'list'\nmessage = 'm'\npattern = 'list([:first, ..., :last])'\n",
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "any()\nany(a, b, c)\nxs |> any()\n\
+edges(1, 1)\nedges(1, nested(a), 1)\nedges(1)\nedges(1, 2)\n\
+list([:first, :last])\nlist([:first, nested(a), :last])\nlist([:last, :first])\n";
+    for engine in [&strict, &fast] {
+        let mut found = lines(engine, "a.ex", source);
+        found.sort_unstable();
+        assert_eq!(found, [1, 2, 3, 4, 5, 8, 9]);
+    }
+    assert_eq!(lint(&strict, "a.ex", source), lint(&fast, "a.ex", source));
+}
+
+#[test]
+fn sequence_ellipsis_does_not_visit_skipped_expression_trees() {
+    let rule = "id = 'edges'\nmessage = 'm'\npattern = 'check(:first, ..., :last)'\n";
+    let engine = engine(&[rule]);
+    let deep = format!("{}value{}", "{".repeat(300), "}".repeat(300));
+    let middle = std::iter::repeat_n(deep, 256)
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert_eq!(
+        lines(&engine, "a.ex", &format!("check(:first, {middle}, :last)")),
+        [1]
+    );
+    assert!(lines(&engine, "a.ex", "check(:last, :first)").is_empty());
+}
+
+#[test]
+fn pattern_validation_rejects_unsupported_or_mixed_syntax_instead_of_guessing() {
+    for spec in [
+        "pattern = []",
+        "pattern = 'Enum.map(..., ...)'",
+        "pattern = 'check(_ + ...)'",
+        "pattern = 'Enum.map(%{x: value}, _)'",
+        "pattern = 'Enum.map(_, fn x ->'",
+        "pattern = 'check(1'",
+        "pattern = 'def foo do :ok end'",
+        "pattern = '@name value'",
+        "pattern = '_ * 0'\nreport = 'callee'",
+        "pattern = 'check(_)'\nreport = 'operator'",
+        "pattern = 'Enum.map(_, _)'\nquery = '(call) @finding'",
+        "pattern = 'Enum.map(_, _)'\nregex = 'map'",
+        "pattern = 'Enum.map(_, _)'\n[[stages]]\nfrom = 'finding'\nquery = '(call)'",
+        "pattern = 'Enum.map(_, _)'\nwhere = { missing = 'variable' }",
+        "pattern = 'Enum.map(_, _)'\nwhere = { _ = 'variable' }",
+        "pattern = ['check(x)', 'check(y)']\nwhere = { x = 'variable' }",
+        "query = '(call) @finding'\nwhere = { x = 'variable' }",
+        "query = '(call) @finding'\nreport = 'callee'",
+    ] {
+        let root = fixture();
+        let path = root.join("invalid.toml");
+        fs::write(&path, format!("id = 'invalid'\nmessage = 'm'\n{spec}\n")).unwrap();
+        let (rule, problems) = compile_rule(&path);
+        assert!(
+            rule.is_none() && !problems.errors.is_empty(),
+            "{spec}: {problems:?}"
+        );
+    }
+}
+
+#[test]
+fn source_order_comparisons_check_adjacent_lines_and_fold_ascii_case() {
+    let rule = r#"
+id = "order"
+message = "m"
+query = '(source (identifier) @_left . (identifier) @finding)'
+[[comparisons]]
+left = "_left"
+right = "finding"
+operator = "next-line"
+[[comparisons]]
+left = "_left"
+right = "finding"
+operator = "ascii-case-gt"
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    for engine in [&strict, &fast] {
+        let source = "zebra\naPple\n\nzebra\n\napple\naBout\n";
+        assert_eq!(lines(engine, "a.ex", source), [2, 7]);
+        assert!(lines(engine, "a.ex", "zebra; aPple\n").is_empty());
+    }
+}
+
+#[test]
+fn atom_constraint_matches_decoded_static_atoms_without_matching_strings() {
+    let rule = r#"
+id = "same-atom"
+message = "m"
+pattern = 'sample(value, value)'
+where = { value = "atom" }
+"#;
+    let (root, strict) = project("", &[rule]);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = r##"sample(:"ok", :ok)
+sample(nil, :"nil")
+sample("ok", "ok")
+sample(:"#{dynamic}", :"#{dynamic}")
+sample(:ok, :error)
+"##;
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "a.ex", source), [1, 2]);
+    }
+}
+
+#[test]
+fn logical_list_count_treats_keyword_pairs_as_individual_items() {
+    let rules = [
+        r#"id = "list"
+message = "m"
+query = '((call (arguments [(list) (keywords)] @_list)) @finding (#list-items-gt? @_list 2))'
+"#,
+        r#"id = "stage-list"
+message = "m"
+query = '(call (arguments (_) @_slot)) @finding'
+[[stages]]
+from = "_slot"
+query = '([(list) (keywords)] @_list (#list-items-gt? @_list 2))'
+export = ["_list"]
+"#,
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source =
+        "f([:a, b: [1, 2, 3]])\nf([:a, b: 1, # comment\nc: 2])\nf(a: 1, b: 2, c: 3)\nf([1, 2])\n";
+    for engine in [&strict, &fast] {
+        let hits = lint(engine, "a.ex", source).unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|hit| (hit.rule.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            [
+                ("list", 2),
+                ("list", 4),
+                ("stage-list", 2),
+                ("stage-list", 4)
+            ]
+        );
+    }
+}
+
+#[test]
+fn line_span_predicate_matches_strict_grouped_and_auxiliary_queries() {
+    let rules = [
+        r#"id = "span"
+message = "m"
+query = '((call (do_block) @_body) @finding (#line-span-gt? @_body 2))'
+"#,
+        r#"id = "witness"
+message = "m"
+query = '(call (do_block) @_body) @finding'
+[[conditions]]
+capture = "_body"
+relation = "root"
+query = '((do_block) @_body (#line-span-gt? @_body 2))'
+expect = "exists"
+"#,
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let source = "quote do :ok end\nquote do\n  :ok\nend\nquote do\n  # comment\n\n  :ok\nend\n";
+    for engine in [&strict, &fast] {
+        let hits = lint(engine, "a.ex", source).unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|hit| (hit.rule.as_str(), hit.line))
+                .collect::<Vec<_>>(),
+            [("span", 5), ("witness", 5)]
+        );
+    }
+    assert!(
+        crate::engine::compile_query("((call) @finding (#line-span-gt? @finding -1))", true)
+            .is_err()
+    );
+}
+
+#[test]
+fn intermediate_pattern_hits_are_bounded_even_when_later_suppressed() {
+    let rules: Vec<_> = (0..256)
+        .map(|n| format!("id = 'probe-{n}'\nmessage = 'm'\npattern = 'p()'\n"))
+        .collect();
+    let refs: Vec<_> = rules.iter().map(String::as_str).collect();
+    let (root, strict) = project("", &refs);
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()));
+    let source = "p() # fino:disable-line all\n".repeat(400);
+    for engine in [&strict, &fast] {
+        let error = lint(engine, "a.ex", &source).unwrap_err();
+        assert!(
+            error.message.contains("intermediate pattern hit limit"),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn pattern_limits_and_unsupported_repeated_capture_equality_fail_the_file() {
+    let rule = "id = 'same'\nmessage = 'm'\npattern = 'check(value, value)'\n";
+    let engine = engine(&[rule]);
+    let source = "check(%{a: 1}, %{a: 1})";
+    assert!(
+        lint(&engine, "a.ex", source)
+            .unwrap_err()
+            .message
+            .contains("repeated capture equality")
+    );
+    let source = format!("check({}x{}, x)", "(".repeat(200), ")".repeat(200));
+    assert_eq!(lines(&engine, "a.ex", &source), [1]);
+    let source = format!("check({}x{}, x)", "{".repeat(200), "}".repeat(200));
+    assert!(
+        lint(&engine, "a.ex", &source)
+            .unwrap_err()
+            .message
+            .contains("nesting limit")
+    );
+}
+
+#[test]
+fn variable_capture_constraints_reject_literals_destructuring_and_calls() {
+    let engine = engine(&[include_str!(
+        "../examples/patterns/.fino/rules/identity-map.toml"
+    )]);
+    let source = "Enum.map(items, fn %{id: id} -> %{id: id} end)\n\
+Enum.map(items, fn 1 -> 1 end)\n\
+Enum.map(items, fn item -> item() end)\n\
+Enum.map(items, fn item -> item end)\n";
+    assert_eq!(lines(&engine, "a.ex", source), [4]);
+}
+
+#[test]
+fn pattern_wildcards_do_not_normalize_deep_inputs_or_unrelated_pipelines() {
+    let identity = include_str!("../examples/patterns/.fino/rules/identity-map.toml");
+    let boolean_case = include_str!("../examples/patterns/.fino/rules/case-true-false.toml");
+    let (root, strict) = project("", &[identity, boolean_case]);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    let deep = format!("{}x{}", "{".repeat(300), "}".repeat(300));
+    let source = format!(
+        "seed{}\nEnum.map({deep}, fn x -> x end)\ncase ready? do true -> {deep}; false -> :no end\n",
+        " |> unrelated()".repeat(500)
+    );
+    for engine in [&strict, &fast] {
+        let mut found = lines(engine, "a.ex", &source);
+        found.sort_unstable();
+        assert_eq!(found, [2, 3]);
+    }
+}
+
+#[test]
+fn pattern_names_normalize_identifiers_but_preserve_quoted_values_and_token_spans() {
+    let rules = [
+        "id = 'local'\nmessage = 'm'\npattern = 'café(_)'\nreport = 'callee'\n",
+        "id = 'remote'\nmessage = 'm'\npattern = 'Enum.café(_)'\nreport = 'callee'\n",
+    ];
+    let (root, strict) = project("", &rules);
+    let (fast, _) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    let source = "cafe\u{301}(x)\nx |> ((cafe\u{301}))\n\
+Enum.cafe\u{301}(x)\nx |> Enum.cafe\u{301}()\n\
+Enum.\"café\"(x)\nEnum.\"cafe\u{301}\"(x)\n";
+    for engine in [&strict, &fast] {
+        let found = lint(engine, "a.ex", source).unwrap();
+        assert_eq!(
+            found.iter().map(|f| f.line).collect::<Vec<_>>(),
+            [1, 2, 3, 4, 5]
+        );
+        for finding in found {
+            assert!(matches!(
+                &source[finding.start_byte..finding.end_byte],
+                "cafe\u{301}" | "\"café\""
+            ));
+        }
+    }
+}
+
+#[test]
+fn variable_pattern_captures_exclude_elixir_context_constants() {
+    let rule =
+        "id = 'variable'\nmessage = 'm'\npattern = 'check(value)'\nwhere = {value = 'variable'}\n";
+    let engine = engine(&[rule]);
+    for constant in [
+        "__MODULE__",
+        "__ENV__",
+        "__DIR__",
+        "__CALLER__",
+        "__STACKTRACE__",
+    ] {
+        assert!(lines(&engine, "a.ex", &format!("check({constant})")).is_empty());
+    }
+    assert_eq!(lines(&engine, "a.ex", "check(module)"), [1]);
+}
+
+#[test]
+fn decoded_control_callee_names_match_direct_and_piped_calls() {
+    for escape in [r"\b", r"\f", r"\0", r"\u0001", r"\t", r"\n", r"\\", r#"\""#] {
+        let rule = format!(
+            "id = 'control'\nmessage = 'm'\npattern = 'Enum.\"f{escape}\"(_)'\nreport = 'callee'\n"
+        );
+        let (root, strict) = project("", &[&rule]);
+        let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+        assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+        let source = format!("Enum.\"f{escape}\"(x)\nx |> Enum.\"f{escape}\"()\n");
+        for engine in [&strict, &fast] {
+            assert_eq!(lines(engine, "a.ex", &source), [1, 2], "{escape}");
+        }
+    }
+}
+
+#[test]
+fn decoded_names_and_atoms_work_in_strict_and_grouped_queries() {
+    let rules = [
+        r#"id = "names"
+message = "m"
+query = '''
+((dot right: (_) @finding) (#name-any-of? @finding "filter" "reject"))
+'''
+"#,
+        r#"id = "atoms"
+message = "m"
+query = '''
+((_) @finding (#atom-any-of? @finding "false" "get" "do"))
+'''
+"#,
+    ];
+    let source = r#"Enum.filter(xs)
+Enum."f\x69lter"(xs)
+Enum.'rej\u{65}ct'(xs)
+Enum."fil#{suffix}"(xs)
+false
+:false
+:"f\u0061lse"
+"false"
+:get
+:"\get"
+f(do: value)
+f("d\x6f": value)
+f("d#{suffix}": value)
+"#;
+    let (root, strict) = project("", &rules);
+    fs::write(root.join("a.ex"), source).unwrap();
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    let a = strict.scan(&root, None, 2, &Snapshot::default()).unwrap();
+    let b = fast.scan(&root, None, 2, &Snapshot::default()).unwrap();
+    assert!(a.errors.is_empty(), "{:?}", a.errors);
+    assert_eq!(a.findings, b.findings);
+    assert_eq!(
+        a.findings.iter().map(|f| f.line).collect::<Vec<_>>(),
+        [1, 2, 3, 5, 6, 7, 9, 10, 11, 12]
+    );
+}
+
+#[test]
+fn decoded_predicates_apply_in_stages_and_conditions_and_validate_arguments() {
+    let rule = r#"id = "names"
+message = "m"
+query = '(call target: (dot right: (_) @_name) (arguments (_) @_value)) @finding'
+[[stages]]
+from = "_name"
+query = '((_) @_name (#name-eq? @_name "filter"))'
+[[conditions]]
+capture = "_value"
+query = '((_) @_atom (#atom-eq? @_atom "false"))'
+expect = "exists"
+"#;
+    let (root, strict) = project("", &[rule]);
+    let source =
+        "Enum.\"f\\x69lter\"(:\"f\\u0061lse\")\nEnum.reject(false)\nEnum.filter(\"false\")\n";
+    let (fast, problems) = Engine::load_fast(&root.join(".fino/config.toml")).unwrap();
+    assert!(problems.iter().all(|p| p.errors.is_empty()), "{problems:?}");
+    for engine in [&strict, &fast] {
+        assert_eq!(lines(engine, "a.ex", source), [1]);
+    }
+    for predicate in [
+        "#name-eq? @finding",
+        "#name-eq? @finding @finding",
+        "#atom-eq? @finding \"a\" \"b\"",
+        "#atom-any-of? @finding",
+        "#name-any-of? \"filter\" \"filter\"",
+    ] {
+        let path = root.join("invalid.toml");
+        fs::write(
+            &path,
+            format!("id = 'invalid'\nmessage = 'm'\nquery = '((_) @finding ({predicate}))'\n"),
+        )
+        .unwrap();
+        assert!(compile_rule(&path).0.is_none(), "{predicate}");
+    }
+}
+
+#[test]
 fn count_predicates_ignore_comments() {
     let rule = r#"
 id = "only-try"

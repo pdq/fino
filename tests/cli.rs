@@ -294,6 +294,16 @@ fn tree_accepts_code_a_file_and_stdin_and_schema_stays_json() {
         assert!(output.status.success(), "{output:?}");
         let schema: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         assert!(schema["properties"].is_object());
+        let published = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(format!("schema/{kind}.schema.json")),
+        )
+        .unwrap();
+        assert_eq!(
+            schema,
+            serde_json::from_slice::<serde_json::Value>(&published).unwrap(),
+            "published {kind} schema must match the CLI; regenerate it with fino schema {kind}"
+        );
     }
 }
 

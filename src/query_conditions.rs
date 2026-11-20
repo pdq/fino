@@ -163,6 +163,11 @@ pub(crate) fn compile(
     }
     for (index, spec) in comparisons.iter().enumerate() {
         let result: Result<Comparison> = (|| {
+            if matches!(spec.operator, BindingOperator::NextLine)
+                && (!spec.left_prefix.is_empty() || !spec.right_prefix.is_empty())
+            {
+                return Err("operator next-line does not accept text prefixes".into());
+            }
             Ok(Comparison {
                 left: binding(&pipeline.bindings, &spec.left, "left")?,
                 right: binding(&pipeline.bindings, &spec.right, "right")?,
@@ -300,10 +305,20 @@ impl QueryWork {
         query: &Query,
         found: &QueryMatch,
         progress: &Progress,
+        text: &[u8],
     ) -> Result<bool> {
         use tree_sitter::QueryPredicateArg::{Capture, String as Text};
         for predicate in query.general_predicates(found.pattern_index) {
             self.predicate_work(1)?;
+            if crate::literal::PREDICATES.contains(&predicate.operator.as_ref()) {
+                if !crate::literal::predicate(predicate, found, text, |amount| {
+                    self.predicate_work(amount)?;
+                    progress.check()
+                })? {
+                    return Ok(false);
+                }
+                continue;
+            }
             let [Capture(index), Text(n)] = predicate.args.as_ref() else {
                 return Ok(false);
             };
@@ -315,6 +330,21 @@ impl QueryWork {
                 .iter()
                 .filter(|capture| capture.index == *index)
             {
+                if predicate.operator.as_ref() == "line-span-gt?" {
+                    if crate::scan::line_span(capture.node) <= n {
+                        return Ok(false);
+                    }
+                    continue;
+                }
+                if predicate.operator.as_ref() == "list-items-gt?" {
+                    if !crate::scan::list_items_gt(capture.node, n, || {
+                        self.predicate_work(1)?;
+                        progress.check()
+                    })? {
+                        return Ok(false);
+                    }
+                    continue;
+                }
                 let count = self.child_count(capture.node, progress)?;
                 let passes = match predicate.operator.as_ref() {
                     "count-eq?" => count == n,
@@ -367,7 +397,7 @@ impl<'tree> Search<'_, 'tree, '_> {
                     .candidates
                     .checked_sub(1)
                     .ok_or("auxiliary query candidate limit exceeded")?;
-                if work.predicates_hold(self.query, found, &progress)? && visit(found) {
+                if work.predicates_hold(self.query, found, &progress, self.text)? && visit(found) {
                     break;
                 }
             }
@@ -591,6 +621,12 @@ impl<'tree> Evaluator<'tree> {
             ) else {
                 return Ok(Outcome::Reject);
             };
+            if matches!(comparison.operator, BindingOperator::NextLine) {
+                if left.end_position().row.checked_add(1) != Some(right.start_position().row) {
+                    return Ok(Outcome::Reject);
+                }
+                continue;
+            }
             let left = &text[left.byte_range()];
             let right = &text[right.byte_range()];
             let prefixed =
@@ -599,7 +635,8 @@ impl<'tree> Evaluator<'tree> {
                 comparison.operator,
                 BindingOperator::NfcEq | BindingOperator::NfcNotEq
             );
-            if prefixed || normalized {
+            let ordered = matches!(comparison.operator, BindingOperator::AsciiCaseGt);
+            if prefixed || normalized || ordered {
                 for size in [
                     left.len(),
                     right.len(),
@@ -608,6 +645,18 @@ impl<'tree> Evaluator<'tree> {
                 ] {
                     self.work.predicate_work(size)?;
                 }
+            }
+            if ordered {
+                let left = comparison.left_prefix.as_bytes().iter().chain(left);
+                let right = comparison.right_prefix.as_bytes().iter().chain(right);
+                if !left
+                    .map(u8::to_ascii_lowercase)
+                    .cmp(right.map(u8::to_ascii_lowercase))
+                    .is_gt()
+                {
+                    return Ok(Outcome::Reject);
+                }
+                continue;
             }
             let bytes_equal = if prefixed {
                 comparison
@@ -620,6 +669,7 @@ impl<'tree> Evaluator<'tree> {
                 left == right
             };
             let equal = match comparison.operator {
+                BindingOperator::AsciiCaseGt | BindingOperator::NextLine => unreachable!(),
                 BindingOperator::TextEq | BindingOperator::TextNotEq => bytes_equal,
                 BindingOperator::NfcEq | BindingOperator::NfcNotEq => {
                     if bytes_equal {
@@ -645,6 +695,7 @@ impl<'tree> Evaluator<'tree> {
                 }
             };
             if !match comparison.operator {
+                BindingOperator::AsciiCaseGt | BindingOperator::NextLine => unreachable!(),
                 BindingOperator::TextEq | BindingOperator::NfcEq => equal,
                 BindingOperator::TextNotEq | BindingOperator::NfcNotEq => !equal,
             } {

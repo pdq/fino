@@ -5,6 +5,9 @@ Fino rules are TOML data, not executable plugins. Start with
 fields supported by your installed binary. See [configuration](configuration.md)
 for project setup.
 
+For the experimental Elixir-shaped authoring layer, see
+[patterns](patterns.md). Raw queries remain available for advanced cases.
+
 ## Author and verify
 
 1. State what should fail and the closest case that should pass.
@@ -16,6 +19,7 @@ for project setup.
 
    | Matcher            | Use for        | Finding location             |
    | ------------------ | -------------- | ---------------------------- |
+   | `pattern`          | Code shapes    | Whole match or callee        |
    | `query`            | Elixir syntax  | Each `@finding` capture      |
    | `regex`            | Source text    | Each matched substring       |
    | `path_only = true` | File placement | Line 1 of each selected file |
@@ -69,6 +73,12 @@ types; the query above does not resolve `alias IO, as: Output`.
 
 Standard tree-sitter text predicates are supported, along with `#count-eq?`,
 `#count-gt?`, and `#count-lt?` for named child counts excluding comments.
+`(#line-span-gt? @node N)` checks whether the node spans more than `N` physical
+line breaks, including blank and comment lines. It uses syntax positions and
+works in outer queries, stages, and conditions.
+`(#list-items-gt? @node N)` counts immediate items of a `list` or `keywords`
+node. Trailing keyword pairs count separately, comments do not count, and
+nested lists count as single items. It stops once the threshold is exceeded.
 Use [scoped matching](query-stages.md) for per-capture `conditions`, ordered
 root-rebased `stages`, and source-text `comparisons`. These are not semantic
 analysis or arbitrary AST normalization. When a logical check needs different
